@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>audioTXT — Transcrição</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%8E%99%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/app.css?v=11" />
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">◉</div>
+      <h1>audio<span>TXT</span></h1>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-view="new"><i>✎</i><span>Nova transcrição</span></button>
+      <button class="nav-item" data-view="library"><i>▤</i><span>Biblioteca</span><b class="nav-count" id="navHistCount"></b></button>
+      <button class="nav-item" data-view="models"><i>◳</i><span>Modelos</span></button>
+      <button class="nav-item" data-view="settings"><i>⚙</i><span>Configurações</span></button>
+    </nav>
+
+    <div class="side-foot">
+      <div class="storage">
+        <span class="label">ARMAZENAMENTO</span>
+        <div class="bar-mini"><i id="storageBar"></i></div>
+        <span class="muted tiny" id="storageTxt">—</span>
+      </div>
+      <div class="gpu-mini" id="gpuMini">
+        <div class="gpu-mini-dot" id="gpuMiniDot"></div>
+        <div>
+          <div class="gpu-mini-name" id="gpuMiniName">—</div>
+          <div class="muted tiny" id="gpuMiniVram">—</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ WORKSPACE ============ -->
+  <div class="workspace">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menuBtn" title="Menu">☰</button>
+      <div class="model-active" id="modelActiveBtn" title="Gerenciar modelos">
+        <span class="muted tiny">Modelo ativo</span>
+        <strong id="activeModelName">—</strong>
+        <span class="tag" id="activeModelTag"></span>
+        <i class="chev">⌄</i>
+      </div>
+      <div class="gpu-status" id="gpuStatus">
+        <span class="dot" id="gpuDot"></span>
+        <div>
+          <strong id="gpuStatusTitle">—</strong>
+          <span class="muted tiny" id="gpuStatusSub"></span>
+        </div>
+      </div>
+      <div class="top-icons">
+        <button class="icon-btn" id="themeBtn" title="Tema claro/escuro">☀</button>
+        <button class="avatar" id="avatarBtn" title="Conta">Y</button>
+        <div class="menu-pop" id="accountMenu">
+          <div class="menu-mail muted tiny" id="accountMail"></div>
+          <button id="logoutBtn">Sair</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="views">
+
+      <!-- ====== VIEW: NOVA TRANSCRIÇÃO ====== -->
+      <section class="view active" id="view-new">
+        <div class="grid-new">
+          <div class="col-primary">
+            <!-- upload -->
+            <div class="card upload-card">
+              <input type="file" id="fileInput" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.wma,.amr,.aif,.aiff,.aifc,.caf,.mp4,.m4v,.mkv,.mov,.webm,.3gp,.ts,.wv,.ape" hidden />
+              <div class="dropzone" id="dropzone">
+                <div class="dz-icon">☁</div>
+                <h2 class="dz-title">Arraste seu áudio ou vídeo aqui</h2>
+                <p class="muted">ou <u id="dzPick">selecione um arquivo</u> para transcrever</p>
+                <p class="formats muted tiny">MP3 · WAV · M4A · AAC · OGG · FLAC · OPUS · MP4 · MKV · MOV · qualquer formato</p>
+                <div class="dz-actions">
+                  <button class="btn-primary" id="pickBtn">📁 Selecionar arquivo</button>
+                  <button class="btn-soft" id="recBtn">🎙 Gravar áudio</button>
+                </div>
+                <div class="rec-live hidden" id="recLive">
+                  <span class="rec-dot"></span><span id="recTime">00:00</span>
+                  <button class="btn-primary" id="recStop">Parar e usar</button>
+                  <button class="btn-ghost" id="recCancel">Cancelar</button>
+                </div>
+              </div>
+              <div class="opts" id="transcribeOpts">
+                <label class="mini">Idioma
+                  <select id="language">
+                    <option value="auto">Detectar</option>
+                    <option value="pt">Português</option><option value="en">Inglês</option>
+                    <option value="es">Espanhol</option><option value="fr">Francês</option>
+                    <option value="de">Alemão</option><option value="it">Italiano</option>
+                    <option value="ja">Japonês</option>
+                  </select>
+                </label>
+                <label class="mini">Tarefa
+                  <select id="task">
+                    <option value="transcribe">Transcrever</option>
+                    <option value="translate">Traduzir p/ inglês</option>
+                  </select>
+                </label>
+                <label class="mini check hidden" id="extractOpt" title="Converte o vídeo para áudio leve (16 kHz) antes de enviar.">
+                  <input type="checkbox" id="extractAudio" checked />
+                  <span>Extrair só o áudio antes de enviar <span class="muted tiny">(vídeos / arquivos grandes)</span></span>
+                </label>
+              </div>
+            </div>
+
+            <!-- card da transcrição ativa -->
+            <div class="card job-card hidden" id="jobCard">
+              <div class="job-head">
+                <div class="job-file">
+                  <div class="file-ico">🎵</div>
+                  <div>
+                    <strong id="jobName">—</strong>
+                    <div class="muted tiny" id="jobMeta">—</div>
+                  </div>
+                </div>
+                <div class="job-head-actions">
+                  <button class="btn-soft" id="changeModelBtn">Alterar modelo</button>
+                  <button class="btn-primary" id="startBtn">Transcrever ▸</button>
+                </div>
+              </div>
+
+              <!-- player -->
+              <div class="player hidden" id="player">
+                <button class="play-btn" id="playBtn">▶</button>
+                <span class="p-time"><span id="pCur">00:00</span> / <span id="pDur">00:00</span></span>
+                <canvas class="wave" id="wave" height="48"></canvas>
+                <select class="p-speed" id="pSpeed">
+                  <option value="0.75">0.75x</option><option value="1" selected>1.0x</option>
+                  <option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2.0x</option>
+                </select>
+                <input type="range" class="p-vol" id="pVol" min="0" max="1" step="0.05" value="1" />
+                <audio id="audio" preload="metadata"></audio>
+              </div>
+
+              <!-- tabs -->
+              <div class="tabs" id="tabs">
+                <button class="tab active" data-tab="transcript">📝 Transcrição</button>
+                <button class="tab" data-tab="segments">⏱ Segmentos</button>
+                <div class="tab-spacer"></div>
+                <div class="search-box editor-tool hidden"><input id="searchInput" placeholder="Buscar no texto…" /></div>
+                <button class="icon-btn editor-tool hidden" id="copyBtn" title="Copiar">⧉</button>
+                <div class="export-wrap editor-tool hidden">
+                  <button class="btn-soft" id="exportBtn">Exportar ⌄</button>
+                  <div class="menu-pop" id="exportMenu">
+                    <button data-exp="txt">Baixar .txt</button>
+                    <button data-exp="srt">Baixar .srt</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- progresso (durante processamento) -->
+              <div class="proc-bar hidden" id="procBar">
+                <div class="proc-chart"><canvas id="procChart"></canvas></div>
+                <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+                <span class="muted tiny" id="stageLabel">—</span>
+              </div>
+
+              <!-- painéis -->
+              <div class="tab-panel" id="panel-transcript">
+                <div class="transcript" id="transcript">
+                  <p class="muted placeholder">A transcrição aparece aqui, trecho a trecho, enquanto o áudio é processado.</p>
+                </div>
+              </div>
+              <div class="tab-panel hidden" id="panel-segments">
+                <div class="segments-plain" id="segmentsPlain"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- coluna direita -->
+          <aside class="col-rail">
+            <div class="card status-card hidden" id="statusCard">
+              <div class="card-head"><h3>Status da transcrição</h3></div>
+              <div class="ring-wrap">
+                <svg class="ring" viewBox="0 0 120 120">
+                  <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
+                  <circle class="ring-fg" id="ringFg" cx="60" cy="60" r="52"></circle>
+                </svg>
+                <div class="ring-center"><b id="ringPct">0%</b><span class="muted tiny" id="ringState">—</span></div>
+              </div>
+              <div class="status-rows">
+                <div><span class="muted tiny">Tempo decorrido</span><b id="statElapsed">00:00</b></div>
+                <div><span class="muted tiny">Tempo restante</span><b id="statEta">—</b></div>
+                <div><span class="muted tiny">Duração</span><b id="statDuration">—</b></div>
+                <div><span class="muted tiny">Velocidade</span><b id="statSpeed">—</b></div>
+              </div>
+            </div>
+
+            <!-- painel técnico recolhível -->
+            <div class="card tech-card" id="techCard">
+              <div class="card-head tech-head" id="techToggle">
+                <h3>Recursos do sistema</h3>
+                <i class="chev" id="techChev">⌄</i>
+              </div>
+              <div class="tech-body" id="techBody">
+                <div class="metric"><div class="m-line"><span>CPU</span><b id="cpuNow">0%</b></div>
+                  <div class="spark"><canvas id="cpuChart"></canvas></div></div>
+                <div class="metric"><div class="m-line"><span>RAM</span><b id="ramTxt">—</b></div>
+                  <div class="bar-mini"><i id="ramBar"></i></div></div>
+                <div class="metric" id="gpuMetric"><div class="m-line"><span>GPU</span><b id="gpuNow">0%</b></div>
+                  <div class="spark"><canvas id="gpuChart"></canvas></div></div>
+                <div class="metric" id="vramMetric"><div class="m-line"><span>VRAM</span><b id="vramTxt">—</b></div>
+                  <div class="bar-mini"><i id="vramBar"></i></div></div>
+                <div class="tech-foot" id="techFoot">
+                  <div><span class="muted tiny">Temp.</span><b id="tempTxt">—</b></div>
+                  <div><span class="muted tiny">Potência</span><b id="powerTxt">—</b></div>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ====== VIEW: BIBLIOTECA ====== -->
+      <section class="view" id="view-library">
+        <div class="view-head">
+          <h2>Biblioteca</h2>
+          <div class="search-box wide"><input id="libSearch" placeholder="Buscar por nome ou texto…" /></div>
+        </div>
+        <div class="card">
+          <div class="history" id="historyList">
+            <p class="muted placeholder">Nenhuma transcrição ainda. As concluídas ficam salvas aqui.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ====== VIEW: MODELOS ====== -->
+      <section class="view" id="view-models">
+        <div class="view-head"><h2>Modelos Whisper</h2>
+          <span class="muted tiny">Baixe uma vez; fica salvo no servidor. Recomendado p/ 16 GB: Large v3 Turbo.</span></div>
+        <div class="card"><div class="model-grid" id="modelGrid"></div></div>
+      </section>
+
+      <!-- ====== VIEW: CONFIGURAÇÕES ====== -->
+      <section class="view" id="view-settings">
+        <div class="view-head"><h2>Configurações</h2></div>
+        <div class="card set-card">
+          <div class="set-row"><div><strong>Tema</strong><span class="muted tiny">Claro ou escuro</span></div>
+            <button class="btn-soft" id="themeBtn2">Alternar tema</button></div>
+          <div class="set-row"><div><strong>Modelo padrão</strong><span class="muted tiny" id="setDefaultModel">—</span></div>
+            <button class="btn-soft" data-view="models" id="goModels">Gerenciar modelos</button></div>
+          <div class="set-row"><div><strong>Dispositivo</strong><span class="muted tiny" id="setDevice">—</span></div></div>
+          <div class="set-row"><div><strong>Conta</strong><span class="muted tiny" id="setMail">—</span></div>
+            <button class="btn-ghost" id="logoutBtn2">Sair</button></div>
+          <div class="set-row"><div><strong>Sobre</strong><span class="muted tiny">audioTXT · Whisper (faster-whisper) local acelerado por GPU</span></div></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/vendor/chart.min.js"></script>
+<script src="/static/app.js?v=11"></script>
+</body>
+</html>

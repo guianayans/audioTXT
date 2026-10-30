@@ -1,0 +1,9 @@
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.34,<0.35
+python-multipart>=0.0.20
+faster-whisper>=1.1.0,<2
+huggingface_hub>=0.27,<1
+nvidia-ml-py>=12.535
+numpy>=1.24
+psutil>=6.1
+itsdangerous>=2.2

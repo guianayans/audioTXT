@@ -1,0 +1,67 @@
+# Coolify: recurso "Docker Compose Empty" com este arquivo colado. Mesmo padrão do
+# app "downloader": GPU via nvidia-container-toolkit, rede "coolify" e rota pelo
+# Traefik. O domínio é configurado APENAS aqui (e no dynamic-proxy.yaml), não no Coolify.
+services:
+  audiotxt:
+    container_name: audiotxt
+    build:
+      context: /pendriver/audioTXT
+      dockerfile: Dockerfile
+    image: audiotxt-local:latest
+    pull_policy: build
+    working_dir: /app
+    environment:
+      # —— senha de acesso à página (defina no Coolify) ——
+      AUDIOTXT_PASSWORD: ${AUDIOTXT_PASSWORD}
+      AUDIOTXT_SESSION_SECRET: ${AUDIOTXT_SESSION_SECRET}
+      AUDIOTXT_SESSION_HOURS: ${AUDIOTXT_SESSION_HOURS:-72}
+      AUDIOTXT_COOKIE_SECURE: ${AUDIOTXT_COOKIE_SECURE:-true}
+      # —— modelo e dispositivo ——
+      AUDIOTXT_DEFAULT_MODEL: ${AUDIOTXT_DEFAULT_MODEL:-large-v3-turbo}
+      AUDIOTXT_DEVICE: ${AUDIOTXT_DEVICE:-auto}
+      AUDIOTXT_DATA_DIR: /data
+      HF_HOME: /data/hf
+      # —— GPU ——
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    volumes:
+      - audiotxt_data:/data
+    restart: unless-stopped
+    # Requer nvidia-container-toolkit no host (já presente neste servidor).
+    gpus: all
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8000/api/health']
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+    networks:
+      - coolify
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - 'traefik.http.routers.audiotxt.rule=Host(`audiotxt.gvtserver.online`) || Host(`www.audiotxt.gvtserver.online`)'
+      - traefik.http.routers.audiotxt.entrypoints=https
+      - traefik.http.routers.audiotxt.tls=true
+      - traefik.http.services.audiotxt.loadbalancer.server.port=8000
+      - traefik.http.routers.audiotxt.middlewares=audiotxt-sec
+      - traefik.http.middlewares.audiotxt-sec.headers.forceSTSHeader=true
+      - traefik.http.middlewares.audiotxt-sec.headers.stsSeconds=31536000
+      - traefik.http.middlewares.audiotxt-sec.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.audiotxt-sec.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.audiotxt-sec.headers.referrerPolicy=strict-origin-when-cross-origin
+      - 'traefik.http.middlewares.audiotxt-sec.headers.customResponseHeaders.X-Frame-Options=SAMEORIGIN'
+      - 'traefik.http.middlewares.audiotxt-sec.headers.customResponseHeaders.Permissions-Policy=camera=(), microphone=(), geolocation=()'
+
+volumes:
+  audiotxt_data: null
+
+networks:
+  coolify:
+    external: true

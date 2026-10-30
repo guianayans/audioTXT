@@ -1,0 +1,32 @@
+# Traefik (Coolify) — copie para /data/coolify/proxy/dynamic/audiotxt.yaml
+#
+# Entrega todo o tráfego de audiotxt.gvtserver.online ao container "audiotxt" (porta 8000).
+# Não configure domínio no Coolify: esta rota já faz o papel (mesmo esquema do downloader/notchly).
+http:
+  routers:
+    audiotxt:
+      rule: 'Host(`audiotxt.gvtserver.online`) || Host(`www.audiotxt.gvtserver.online`)'
+      priority: 1000
+      entryPoints:
+        - https
+      service: audiotxt-svc
+      middlewares:
+        - audiotxt-sec
+      tls: {}
+  middlewares:
+    audiotxt-sec:
+      headers:
+        forceSTSHeader: true
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        referrerPolicy: strict-origin-when-cross-origin
+        customResponseHeaders:
+          X-Frame-Options: SAMEORIGIN
+          Permissions-Policy: 'camera=(), microphone=(), geolocation=()'
+          Server: ''
+  services:
+    audiotxt-svc:
+      loadBalancer:
+        servers:
+          - url: 'http://audiotxt:8000'

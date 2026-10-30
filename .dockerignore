@@ -1,0 +1,9 @@
+.git
+.env
+.DS_Store
+__pycache__
+*.pyc
+data
+web/vendor
+*.log
+README.md
