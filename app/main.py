@@ -789,6 +789,40 @@ def download_summary(job_id: str, style: str = summarizer.DEFAULT_STYLE,
                              headers={"Content-Disposition": disp})
 
 
+@app.delete("/api/summary/{job_id}")
+def delete_summary(job_id: str, style: str = "", _: bool = Depends(require_auth)):
+    """Apaga o resumo de um estilo (ou todos, se style vazio). Recusa se em curso."""
+    _check_id(job_id)
+    sj = SUMMARY_JOBS.get(job_id)
+    if sj and sj.get("status") == "running":
+        raise HTTPException(409, "Resumo em andamento — aguarde terminar.")
+    targets = [style] if style in summarizer.SUMMARY_STYLES else list(summarizer.SUMMARY_STYLES)
+    removed = False
+    for s in targets:
+        p = _summary_md_path(job_id, s)
+        if os.path.isfile(p):
+            os.remove(p)
+            removed = True
+    if not style:  # exclusão total: remove também o formato antigo
+        legacy = _legacy_summary_path(job_id)
+        if os.path.isfile(legacy):
+            os.remove(legacy)
+            removed = True
+    meta = _load_meta(job_id)
+    if meta:
+        sums = meta.get("summaries") or {}
+        if style:
+            sums.pop(style, None)
+        else:
+            sums = {}
+        meta["summaries"] = sums
+        meta["has_summary"] = bool(_summary_styles_on_disk(job_id))
+        with open(_meta_path(job_id), "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False)
+    SUMMARY_JOBS.pop(job_id, None)
+    return {"ok": True, "removed": removed}
+
+
 # --------------------------------------------------------------------------
 # Histórico de transcrições (persistido em /data/results)
 # --------------------------------------------------------------------------

@@ -618,7 +618,8 @@ async function showStyleForCurrent(){
 }
 function summaryPlaceholder(){
   $("genSummaryBtn").disabled=false; $("genSummaryBtn").textContent="✦ Gerar resumo";
-  $("dlSummaryBtn").classList.add("hidden"); $("summaryStage").textContent="";
+  $("dlSummaryBtn").classList.add("hidden"); $("rmSummaryBtn").classList.add("hidden");
+  $("summaryStage").textContent="";
   $("summaryBody").innerHTML='<p class="muted placeholder">Escolha o tipo de resumo e gere com IA rodando na sua GPU. O resultado pode ser baixado em Markdown (.md).</p>';
 }
 function renderSummaryDone(jobId, style, body){
@@ -626,7 +627,18 @@ function renderSummaryDone(jobId, style, body){
   $("summaryStage").textContent="";
   $("summaryBody").innerHTML=mdToHtml(body||"");
   const a=$("dlSummaryBtn"); a.href=`/api/summary/${jobId}.md?style=${style}`; a.classList.remove("hidden");
+  $("rmSummaryBtn").classList.remove("hidden");
 }
+$("rmSummaryBtn").addEventListener("click", ()=>{
+  if(!currentJob) return;
+  const lbl=(SUMMARY_STYLES.find((s)=>s.id===selectedStyle)||{}).label||"este resumo";
+  if(!confirm(`Excluir o resumo "${lbl}" desta transcrição?`)) return;
+  fetch(`/api/summary/${currentJob}?style=${selectedStyle}`,{method:"DELETE"})
+    .then(async (r)=>{ if(!r.ok){ let d="Falha"; try{d=(await r.json()).detail||d;}catch(_){ } throw new Error(d);} })
+    .then(()=>{ if(summaryCache[currentJob]) delete summaryCache[currentJob][selectedStyle];
+      summaryPlaceholder(); loadHistory(); toast("Resumo excluído"); })
+    .catch((err)=>toast("⚠ "+(err&&err.message?err.message:"falha")));
+});
 function resetSummaryTab(){
   if(summaryES){ summaryES.close(); summaryES=null; }
   showStyleForCurrent();
@@ -709,6 +721,7 @@ function renderHistory(items){
       toggleHist(row,m.job_id); });
     row.querySelector(".hist-del").onclick=()=>delHist(m.job_id,m.orig_name);
     row.querySelectorAll(".hist-sum").forEach((b)=>{ b.onclick=()=>genHistSummary(m.job_id,row,b.dataset.style); });
+    row.querySelectorAll(".m-sumdel").forEach((b)=>{ b.onclick=()=>delHistSummary(m.job_id,b.dataset.style); });
     wrap.appendChild(row);
     if(libSummaryES[m.job_id]){ const b=row.querySelector(".hist-sum"); if(b){ b.disabled=true; b.textContent="gerando…"; } }
   });
@@ -720,7 +733,8 @@ function histSummaryActions(m){
   const have = m.summaries || (m.has_summary ? {completo:true} : {});
   let html="";
   styles.forEach((s)=>{ if(have[s.id])
-    html += `<a class="m-btn m-md" href="/api/summary/${m.job_id}.md?style=${s.id}" download title="Baixar resumo ${s.label} (.md)">⬇ ${shortStyle(s.id)}</a>`; });
+    html += `<span class="sum-group"><a class="m-btn m-md" href="/api/summary/${m.job_id}.md?style=${s.id}" download title="Baixar resumo ${s.label} (.md)">⬇ ${shortStyle(s.id)}</a>`
+      + `<button class="m-btn m-sumdel" type="button" data-style="${s.id}" title="Excluir resumo ${s.label}">✕</button></span>`; });
   const missing = styles.find((s)=>!have[s.id]);
   if(missing) html += `<button class="m-btn hist-sum" type="button" data-style="${missing.id}" title="Gerar resumo ${missing.label}">✦ ${shortStyle(missing.id)}</button>`;
   return html;
@@ -754,6 +768,15 @@ function attachLibrarySummary(id, style){
     loadHistory(); toast("Resumo pronto ✓"); });
   es.addEventListener("error",(e)=>{ let m="falha"; try{m=JSON.parse(e.data).message;}catch(_){ }
     es.close(); delete libSummaryES[id]; setBtn("✦ "+shortStyle(style), false); toast("⚠ "+m); });
+}
+function delHistSummary(id,style){
+  const lbl=(SUMMARY_STYLES.find((s)=>s.id===style)||{}).label||"resumo";
+  if(!confirm(`Excluir o resumo "${lbl}" desta transcrição?`)) return;
+  fetch(`/api/summary/${id}?style=${style}`,{method:"DELETE"})
+    .then(async (r)=>{ if(!r.ok){ let d="Falha"; try{d=(await r.json()).detail||d;}catch(_){ } throw new Error(d);} })
+    .then(()=>{ if(summaryCache[id]) delete summaryCache[id][style];
+      loadHistory(); toast("Resumo excluído"); })
+    .catch((err)=>toast("⚠ "+(err&&err.message?err.message:"falha")));
 }
 function delHist(id,name){ if(!confirm(`Apagar a transcrição de "${name||"áudio"}"?`)) return;
   fetch(`/api/history/${id}`,{method:"DELETE"}).finally(()=>{ loadHistory(); toast("Transcrição apagada"); }); }
