@@ -163,6 +163,7 @@ class SummaryDownloadJob:
 # Carga do modelo (um por vez) com descarga por ociosidade — libera VRAM.
 # ----------------------------------------------------------------------------
 _loaded = None          # (model_id, Llama)
+_loaded_device = None    # "GPU" | "CPU"
 _load_lock = threading.Lock()
 summarize_lock = threading.Lock()   # só um resumo por vez
 IDLE_UNLOAD_SECONDS = float(os.environ.get("AUDIOTXT_LLM_IDLE_UNLOAD_SECONDS", "300") or 0)
@@ -174,12 +175,22 @@ def touch() -> None:
     _last_used = time.time()
 
 
+def _is_cuda_error(exc) -> bool:
+    """Erro de contexto/dispositivo CUDA (ex.: driver recarregado por outro app)."""
+    s = str(exc).lower()
+    return any(k in s for k in (
+        "device ordinal", "invalid device", "cuda", "cublas", "cudnn",
+        "parallel_for", "no cuda-capable", "cuda error", "ggml",
+    ))
+
+
 def unload_model() -> bool:
-    global _loaded
+    global _loaded, _loaded_device
     with _load_lock:
         if _loaded is None:
             return False
         _loaded = None
+        _loaded_device = None
         import gc
         gc.collect()
         return True
@@ -219,11 +230,13 @@ def _free_vram_mb() -> float | None:
     return None
 
 
-def _ensure_loaded(model_id: str, log=lambda *_: None):
-    global _loaded
+def _ensure_loaded(model_id: str, log=lambda *_: None, prefer_cpu: bool = False):
+    global _loaded, _loaded_device
     with _load_lock:
         touch()
-        if _loaded is not None and _loaded[0] == model_id:
+        if _loaded is not None and _loaded[0] == model_id and not (
+            prefer_cpu and _loaded_device == "GPU"
+        ):
             return _loaded[1]
         if not is_downloaded(model_id):
             raise RuntimeError("Modelo de resumo não baixado. Baixe-o na aba Modelos.")
@@ -246,7 +259,7 @@ def _ensure_loaded(model_id: str, log=lambda *_: None):
 
         # A GPU é compartilhada com outros apps do servidor; se não couber a
         # essa altura, roda na CPU (mais lento, mas sempre conclui).
-        force_cpu = os.environ.get("AUDIOTXT_DEVICE", "auto") == "cpu"
+        force_cpu = prefer_cpu or os.environ.get("AUDIOTXT_DEVICE", "auto") == "cpu"
         free = None if force_cpu else _free_vram_mb()
         need = size_mb * 1.15 + 700  # pesos + buffers/contexto, com folga
         attempts = []
@@ -268,6 +281,7 @@ def _ensure_loaded(model_id: str, log=lambda *_: None):
                 llm = Llama(model_path=path, n_gpu_layers=ngl, n_ctx=N_CTX,
                             verbose=False)
                 _loaded = (model_id, llm)
+                _loaded_device = dev
                 log("Modelo pronto.")
                 return llm
             except Exception as exc:
@@ -310,11 +324,29 @@ def _chunks(llm, text: str, size_tokens: int):
 
 
 def summarize(text: str, model_id: str, log=lambda *_: None) -> str:
-    """Devolve o corpo do resumo em Markdown (sem o cabeçalho com metadados)."""
+    """Devolve o corpo do resumo em Markdown (sem o cabeçalho com metadados).
+
+    Se a GPU falhar por contexto inválido (ex.: driver recarregado por outro
+    app), descarrega e refaz o resumo na CPU — sem derrubar a operação.
+    """
     text = (text or "").strip()
     if not text:
         raise RuntimeError("Transcrição vazia — nada para resumir.")
-    llm = _ensure_loaded(model_id, log=log)
+    prefer_cpu = False
+    for attempt in range(2):
+        llm = _ensure_loaded(model_id, log=log, prefer_cpu=prefer_cpu)
+        try:
+            return _run_summary(llm, text, log=log)
+        except Exception as exc:
+            if attempt == 0 and _loaded_device == "GPU" and _is_cuda_error(exc):
+                log(f"Erro de GPU ({str(exc)[:80]}). Recarregando o resumo na CPU…")
+                unload_model()
+                prefer_cpu = True
+                continue
+            raise
+
+
+def _run_summary(llm, text: str, log=lambda *_: None) -> str:
     with summarize_lock:
         touch()
         n_tokens = len(llm.tokenize(text.encode("utf-8"), add_bos=False, special=False))

@@ -72,6 +72,7 @@ async function init() {
   $("gpuStatusTitle").textContent = hasGpu ? "GPU ativa" : "CPU";
   $("gpuStatusSub").textContent = hasGpu ? "Acelerado por GPU" : "GPU indisponível";
   $("gpuMiniDot").classList.toggle("off", !hasGpu);
+  if (hasGpu) $("gpuMiniDot").classList.add("idle");
   $("setDevice").textContent = hasGpu ? "GPU (CUDA) com fallback p/ CPU" : "CPU";
   if (!hasGpu) { $("gpuMetric").classList.add("hidden"); $("vramMetric").classList.add("hidden"); $("techFoot").classList.add("hidden"); }
   $("setMail").textContent = "Sessão por senha";
@@ -711,7 +712,19 @@ async function tick(){
     $("vramTxt").textContent=`${(g.mem_used_mb/1024).toFixed(1)} / ${(g.mem_total_mb/1024).toFixed(1)} GB`;
     $("tempTxt").textContent=g.temp!=null?g.temp+"°C":"—";
     $("powerTxt").textContent=g.power!=null?g.power+" W":"—";
-    $("gpuMiniName").textContent=g.name; $("gpuMiniVram").textContent=`${(g.mem_total_mb/1024).toFixed(0)} GB VRAM`;
+    $("gpuMiniName").textContent=g.name;
+    // ocupada = a placa está realmente trabalhando (util acima do ruído de ociosidade)
+    const busy = (g.util||0) >= 4;
+    const dot = $("gpuMiniDot");
+    dot.classList.remove("off");
+    dot.classList.toggle("busy", busy);
+    dot.classList.toggle("idle", !busy);
+    if(busy){
+      // uso em tempo real, discreto: placa + memória
+      $("gpuMiniVram").textContent=`GPU ${g.util}% · ${(g.mem_used_mb/1024).toFixed(1)} GB`;
+    } else {
+      $("gpuMiniVram").textContent=`${(g.mem_total_mb/1024).toFixed(0)} GB VRAM · ociosa`;
+    }
   }
 }
 

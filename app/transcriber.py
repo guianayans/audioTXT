@@ -6,6 +6,7 @@ Os modelos ficam no cache do Hugging Face (HF_HOME), que é um volume persistent
 from __future__ import annotations
 
 import glob
+import itertools
 import os
 import re
 import shutil
@@ -335,15 +336,28 @@ def active_device() -> str:
     return _loaded.device if _loaded else ""
 
 
-def load_model(model_id: str, log=lambda *_: None) -> LoadedModel:
+def _is_cuda_error(exc) -> bool:
+    """Erro de contexto/dispositivo CUDA (ex.: driver recarregado por outro app)."""
+    s = str(exc).lower()
+    return any(k in s for k in (
+        "device ordinal", "invalid device", "cuda", "cublas", "cudnn",
+        "parallel_for", "no cuda-capable", "cuda error", "gpu",
+    ))
+
+
+def load_model(model_id: str, log=lambda *_: None,
+               prefer_cpu: bool = False) -> LoadedModel:
     """Carrega o modelo, reaproveitando se já estiver ativo.
 
-    Tenta GPU (float16) e cai para CPU (int8) se algo falhar.
+    Tenta GPU (float16) e cai para CPU (int8) se algo falhar. Com
+    prefer_cpu=True pula a GPU de vez (usado na recuperação após erro de GPU).
     """
     global _loaded
     with _load_lock:
         touch()
-        if _loaded and _loaded.model_id == model_id:
+        if _loaded and _loaded.model_id == model_id and not (
+            prefer_cpu and _loaded.device == "cuda"
+        ):
             return _loaded
 
         repo = MODELS_BY_ID[model_id]["repo"]
@@ -355,7 +369,7 @@ def load_model(model_id: str, log=lambda *_: None) -> LoadedModel:
             import gc
             gc.collect()
 
-        want_gpu = metrics.gpu_available() and os.environ.get(
+        want_gpu = (not prefer_cpu) and metrics.gpu_available() and os.environ.get(
             "AUDIOTXT_DEVICE", "auto"
         ) != "cpu"
 
@@ -429,21 +443,41 @@ def transcribe(audio_path: str, model_id: str, language: str | None,
 
     Eventos: {"type": "start"|"segment"|"log", ...}. O chamador monta o SSE.
     """
-    lm = load_model(model_id, log=log)
-
     log("Lendo o áudio…")
     audio = load_audio(audio_path)
     duration_fallback = round(len(audio) / SAMPLE_RATE, 2)
 
     lang = None if (not language or language == "auto") else language
-    segments, info = lm.model.transcribe(
-        audio,
-        language=lang,
-        task=task,
-        vad_filter=True,
-        beam_size=5,
-    )
 
+    # Carrega o modelo e inicia a transcrição puxando o 1º trecho (é aí que o
+    # trabalho na GPU dispara). Se a GPU falhar por contexto inválido — por
+    # ex. o driver foi recarregado por outro app enquanto o container rodava —
+    # descarrega e refaz na CPU, sem derrubar a transcrição.
+    prefer_cpu = False
+    for attempt in range(2):
+        lm = load_model(model_id, log=log, prefer_cpu=prefer_cpu)
+        try:
+            segments, info = lm.model.transcribe(
+                audio,
+                language=lang,
+                task=task,
+                vad_filter=True,
+                beam_size=5,
+            )
+            seg_iter = iter(segments)
+            first_seg = next(seg_iter, None)
+            break
+        except Exception as exc:
+            if attempt == 0 and lm.device == "cuda" and _is_cuda_error(exc):
+                log(f"Erro de GPU ({str(exc)[:80]}). Recarregando na CPU…")
+                unload_model()
+                prefer_cpu = True
+                continue
+            raise
+
+    all_segments = itertools.chain(
+        [] if first_seg is None else [first_seg], seg_iter
+    )
     duration = float(getattr(info, "duration", 0) or 0) or duration_fallback
     detected = getattr(info, "language", None)
     yield {
@@ -458,7 +492,7 @@ def transcribe(audio_path: str, model_id: str, language: str | None,
 
     started = time.time()
     collected: list[dict] = []
-    for seg in segments:
+    for seg in all_segments:
         item = {"start": float(seg.start), "end": float(seg.end),
                 "text": seg.text}
         collected.append(item)

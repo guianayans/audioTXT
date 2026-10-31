@@ -76,8 +76,11 @@ canvas { display: block; width: 100%; }
 .storage .label { font-size: 10px; letter-spacing: 1px; color: var(--muted); font-weight: 600; }
 .gpu-mini { display: flex; align-items: center; gap: 11px; background: var(--card); border: 1px solid var(--brd);
   border-radius: 13px; padding: 11px 13px; }
-.gpu-mini-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); box-shadow: 0 0 10px var(--good); flex-shrink: 0; }
+.gpu-mini-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); box-shadow: 0 0 10px var(--good); flex-shrink: 0; transition: background .3s, box-shadow .3s; }
 .gpu-mini-dot.off { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+.gpu-mini-dot.idle { background: var(--bad); box-shadow: 0 0 10px var(--bad); animation: none; }
+.gpu-mini-dot.busy { background: var(--good); box-shadow: 0 0 12px var(--good); animation: gpuPulse 1.2s ease-in-out infinite; }
+@keyframes gpuPulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.4); opacity: .6; } }
 .gpu-mini-name { font-weight: 600; font-size: 13px; }
 
 .bar-mini { height: 7px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; margin: 6px 0; }
