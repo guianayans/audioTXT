@@ -7,3 +7,4 @@ nvidia-ml-py>=12.535
 numpy>=1.24
 psutil>=6.1
 itsdangerous>=2.2
+yt-dlp>=2025.1

@@ -146,6 +146,21 @@ canvas { display: block; width: 100%; }
 .rec-live { display: flex; align-items: center; gap: 12px; justify-content: center; margin-top: 16px; }
 .rec-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--bad); animation: pulse 1s infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
+/* ---- colar link ---- */
+.url-paste { margin-top: 16px; }
+.url-or { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 11.5px;
+  text-transform: uppercase; letter-spacing: .08em; }
+.url-or::before, .url-or::after { content: ""; flex: 1; height: 1px; background: var(--brd); }
+.url-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; position: relative; }
+.url-row .url-ico { position: absolute; left: 12px; font-size: 14px; opacity: .7; pointer-events: none; }
+.url-row input { flex: 1; min-width: 0; background: var(--card2); border: 1px solid var(--brd);
+  color: var(--txt); border-radius: 11px; padding: 11px 12px 11px 34px; font-size: 13.5px;
+  outline: none; font-family: inherit; transition: var(--t); }
+.url-row input:focus { border-color: var(--accent); }
+.url-row .btn-primary { white-space: nowrap; flex-shrink: 0; }
+.url-hint { margin-top: 8px; }
+@media (max-width: 560px) { .url-row { flex-wrap: wrap; } .url-row .btn-primary { width: 100%; } }
+
 .opts { display: flex; gap: 14px; margin-top: 14px; }
 .mini { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
 .mini select, .search-box input, select {

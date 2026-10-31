@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/static/app.css?v=11" />
+<link rel="stylesheet" href="/static/app.css?v=12" />
 </head>
 <body>
 <div class="app">
@@ -93,6 +93,16 @@
                   <button class="btn-primary" id="recStop">Parar e usar</button>
                   <button class="btn-ghost" id="recCancel">Cancelar</button>
                 </div>
+              </div>
+              <div class="url-paste">
+                <div class="url-or"><span>ou cole um link</span></div>
+                <div class="url-row">
+                  <span class="url-ico">🔗</span>
+                  <input id="urlInput" type="url" inputmode="url" autocomplete="off"
+                         placeholder="Cole um link do YouTube ou de um vídeo…" />
+                  <button class="btn-primary" id="urlBtn">Transcrever link ▸</button>
+                </div>
+                <p class="muted tiny url-hint">O servidor baixa o áudio direto — funciona com YouTube e centenas de outros sites.</p>
               </div>
               <div class="opts" id="transcribeOpts">
                 <label class="mini">Idioma
@@ -267,6 +277,6 @@
 <div class="toast" id="toast"></div>
 
 <script src="/static/vendor/chart.min.js"></script>
-<script src="/static/app.js?v=11"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>

@@ -5,7 +5,9 @@ Os modelos ficam no cache do Hugging Face (HF_HOME), que é um volume persistent
 """
 from __future__ import annotations
 
+import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,7 +21,81 @@ from faster_whisper import WhisperModel
 from . import metrics
 
 FFMPEG = os.environ.get("AUDIOTXT_FFMPEG", "ffmpeg")
+YTDLP = os.environ.get("AUDIOTXT_YTDLP", "yt-dlp")
 SAMPLE_RATE = 16000
+
+
+# ----------------------------------------------------------------------------
+# Download de áudio a partir de um link (YouTube e centenas de sites) via yt-dlp.
+# Baixa só a melhor trilha de áudio; o ffmpeg decodifica depois na transcrição.
+# ----------------------------------------------------------------------------
+_PROGRESS_RE = re.compile(r"\[download\]\s+([0-9.]+)%\s+of\s+~?\s*([0-9.]+\s*\w+)")
+
+
+def _probe_title(url: str) -> str | None:
+    try:
+        out = subprocess.run(
+            [YTDLP, "--no-playlist", "--skip-download", "--print", "%(title)s", url],
+            capture_output=True, text=True, timeout=60,
+        )
+        lines = [l for l in out.stdout.splitlines() if l.strip()]
+        if out.returncode == 0 and lines:
+            return lines[0].strip()[:120]
+    except Exception:
+        pass
+    return None
+
+
+def download_media(url: str, dest_dir: str, job_id: str,
+                   log=lambda *_: None) -> tuple[str, str | None]:
+    """Baixa o áudio do link para dest_dir/<job_id>.<ext> e devolve (caminho, título).
+
+    O progresso é reportado por log(). Levanta RuntimeError em caso de falha.
+    """
+    url = (url or "").strip()
+    if not re.match(r"^https?://", url, re.I):
+        raise RuntimeError("Link inválido — use um endereço http/https.")
+
+    log("Lendo informações do link…")
+    title = _probe_title(url)
+    if title:
+        log(f"Encontrado: {title}")
+
+    out_tmpl = os.path.join(dest_dir, f"{job_id}.%(ext)s")
+    cmd = [
+        YTDLP, "--no-playlist", "--newline", "--no-part", "--no-cache-dir",
+        "--force-overwrites", "-f", "bestaudio/best", "-o", out_tmpl, url,
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    last_pct = -1
+    tail: list[str] = []
+    for line in proc.stdout:  # type: ignore[union-attr]
+        line = line.rstrip()
+        if not line:
+            continue
+        tail.append(line)
+        del tail[:-8]
+        m = _PROGRESS_RE.search(line)
+        if m:
+            pct = int(float(m.group(1)))
+            if pct != last_pct:
+                last_pct = pct
+                log(f"Baixando o áudio… {pct}% de {m.group(2).replace(' ', '')}")
+        elif line.startswith(("[ExtractAudio]", "[Merger]", "[FixupM4a]")):
+            log("Preparando o áudio baixado…")
+    rc = proc.wait()
+    if rc != 0:
+        detail = (tail[-1] if tail else "")[-200:]
+        raise RuntimeError(
+            "Não consegui baixar desse link (vídeo privado, indisponível ou "
+            f"site não suportado).{(' ' + detail) if detail else ''}")
+
+    found = [f for f in glob.glob(os.path.join(dest_dir, f"{job_id}.*"))
+             if not f.endswith((".part", ".ytdl"))]
+    if not found:
+        raise RuntimeError("Download concluído, mas nenhum arquivo foi gerado.")
+    return found[0], title
 
 
 def load_audio(path: str) -> np.ndarray:

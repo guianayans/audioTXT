@@ -299,6 +299,58 @@ async def upload_finish(job_id: str, _: bool = Depends(require_auth)):
     return {"job_id": job_id, "name": job["name"], "size": job["size"]}
 
 
+@app.post("/api/url/submit")
+async def url_submit(request: Request, _: bool = Depends(require_auth)):
+    """Recebe um link (YouTube/vídeo), baixa o áudio no servidor e transcreve.
+
+    Não passa pelo upload do navegador, então ignora o limite do Cloudflare.
+    """
+    data = await request.json()
+    url = str(data.get("url") or "").strip()
+    if not re.match(r"^https?://", url, re.I):
+        raise HTTPException(400, "Link inválido — use um endereço http/https.")
+    model = str(data.get("model") or "")
+    language = str(data.get("language") or "auto")
+    task = str(data.get("task") or "transcribe")
+    model_id = (model if model in transcriber.MODELS_BY_ID
+                else transcriber.DEFAULT_MODEL)
+    job_id = uuid.uuid4().hex
+    JOBS[job_id] = _new_job(job_id, "", "link", 0, status="fetching")
+    JOBS[job_id].update(model=model_id, language=language, task=task,
+                        source_url=url)
+    threading.Thread(target=_run_url_job,
+                     args=(job_id, url, model_id, language, task),
+                     daemon=True).start()
+    return {"job_id": job_id}
+
+
+def _run_url_job(job_id: str, url: str, model_id: str, language: str, task: str):
+    """Baixa o áudio do link e, em seguida, roda a transcrição normal."""
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    job["status"] = "fetching"
+    job["logs"].append("Preparando o download do link…")
+    try:
+        path, title = transcriber.download_media(
+            url, UPLOAD_DIR, job_id, log=lambda m: job["logs"].append(m))
+        job["path"] = path
+        ext = os.path.splitext(path)[1]
+        job["name"] = f"{title}{ext}" if title else os.path.basename(path)
+        job["size"] = os.path.getsize(path)
+        job["logs"].append(f"Baixado ✓ ({_fmt_mb(job['size'])}) — iniciando transcrição…")
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = str(exc)
+        return
+    _run_job(job_id, model_id, language, task)
+
+
+def _fmt_mb(size: int) -> str:
+    mb = size / (1024 * 1024)
+    return f"{mb:.0f} MB" if mb >= 1 else f"{size / 1024:.0f} KB"
+
+
 def _run_job(job_id: str, model_id: str, language: str, task: str):
     """Worker em segundo plano. Roda mesmo se o cliente fechar a página."""
     job = JOBS.get(job_id)
@@ -408,6 +460,7 @@ def transcribe_stream(job_id: str, _: bool = Depends(require_auth)):
                     "duration": job["duration"], "language": job["detected_lang"],
                     "language_prob": job["lang_prob"], "device": job["device"],
                     "compute_type": job["compute_type"], "model": job["model"],
+                    "name": job["name"],
                 })
             while last_seg < len(job["segments"]):
                 yield sse("segment", job["segments"][last_seg])

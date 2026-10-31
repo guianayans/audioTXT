@@ -315,6 +315,37 @@ function startTranscription(){
   }).catch((err)=>fail(err && err.message ? err.message : "Falha ao preparar o áudio"));
 }
 
+// ---------- transcrever a partir de um link (YouTube/vídeo) ----------
+$("urlBtn").addEventListener("click", startUrlTranscription);
+$("urlInput").addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ e.preventDefault(); startUrlTranscription(); } });
+async function startUrlTranscription(){
+  const url=$("urlInput").value.trim();
+  if(!url){ toast("Cole um link"); return; }
+  if(!/^https?:\/\//i.test(url)){ toast("Link inválido (use http/https)"); return; }
+  const model=selectedModel; const m=MODELS.find((x)=>x.id===model);
+  if(m && !m.downloaded){ toast(`Baixe o modelo "${m.label}" primeiro (aba Modelos)`); switchView("models"); return; }
+  const lang=$("language").value, task=$("task").value;
+  currentFile=null; currentSegments=[];
+  $("jobCard").classList.remove("hidden");
+  $("jobName").textContent="Baixando do link…";
+  $("jobMeta").textContent=url.replace(/^https?:\/\//,"").slice(0,64);
+  $("player").classList.add("hidden");
+  $("startBtn").classList.add("hidden");
+  setEditorTools(false);
+  $("transcript").innerHTML='<p class="muted placeholder">Baixando o áudio do link…</p>';
+  $("segmentsPlain").innerHTML="";
+  $("jobCard").scrollIntoView({ behavior:"smooth", block:"nearest" });
+  $("urlBtn").disabled=true; resetProc("Baixando o áudio…"); setProgress(0,true);
+  try{
+    const res=await fetch("/api/url/submit",{ method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ url, model, language:lang, task }) })
+      .then(async (r)=>{ if(!r.ok){ let d="Falha"; try{d=(await r.json()).detail||d;}catch(_){ } throw new Error(d); } return r.json(); });
+    localStorage.setItem(ACTIVE_KEY,res.job_id);
+    connectStream(res.job_id);
+  }catch(err){ $("urlBtn").disabled=false; fail(err && err.message ? err.message : "Falha ao baixar o link"); }
+}
+
 // Extrai só o áudio (16 kHz mono WAV) no navegador quando a opção está ligada e
 // isso realmente reduz o tamanho (ex.: vídeos). Caso contrário, envia o original.
 async function prepareFile(file){
@@ -388,7 +419,7 @@ function putChunk(jobId, blob, onProg){
     xhr.send(blob);
   });
 }
-function fail(msg){ $("stageLabel").textContent="Erro: "+msg; $("startBtn").disabled=false;
+function fail(msg){ $("stageLabel").textContent="Erro: "+msg; $("startBtn").disabled=false; $("urlBtn").disabled=false;
   localStorage.removeItem(ACTIVE_KEY); setRing(0,"Erro"); setProgress(0,false); toast("⚠ "+msg); }
 
 function connectStream(jobId){
@@ -398,6 +429,7 @@ function connectStream(jobId){
   const es=new EventSource(`/api/transcribe/${jobId}/stream`);
   es.addEventListener("log",(e)=>{ const msg=JSON.parse(e.data).message; $("stageLabel").textContent=msg; $("ringState").textContent=msg.slice(0,18); });
   es.addEventListener("start",(e)=>{ const d=JSON.parse(e.data); currentSegments=[]; t.innerHTML="";
+    if(d.name){ $("jobName").textContent=d.name.replace(/\.[^.]+$/,""); if(!currentFile) $("jobMeta").textContent="do link · "+(d.model||""); }
     $("stageLabel").textContent=`Transcrevendo (${(d.device||"").toUpperCase()}${d.compute_type?" · "+d.compute_type:""})`;
     $("statDuration").textContent=fmtClock(d.duration); setRing(0,"Processando…"); setProgress(0,false); });
   es.addEventListener("segment",(e)=>{ const d=JSON.parse(e.data);
@@ -409,7 +441,7 @@ function connectStream(jobId){
     $("statSpeed").textContent=d.speed?d.speed+"×":"—";
     if(!currentSegments.length) t.innerHTML='<p class="muted">(silêncio — nada transcrito)</p>';
     buildSegmentsPlain(); setEditorTools(currentSegments.length>0);
-    $("startBtn").disabled=false; es.close(); localStorage.removeItem(ACTIVE_KEY);
+    $("startBtn").disabled=false; $("urlBtn").disabled=false; $("urlInput").value=""; es.close(); localStorage.removeItem(ACTIVE_KEY);
     loadHistory(); loadModels(selectedModel); toast("Transcrição concluída ✓"); });
   es.addEventListener("error",(e)=>{ let msg="Falha na transcrição"; try{msg=JSON.parse(e.data).message;}catch(_){}
     fail(msg); es.close(); });
@@ -436,8 +468,9 @@ function collectSegEdited(){ return [...document.querySelectorAll("#transcript .
 async function resumeActive(){
   const jobId=localStorage.getItem(ACTIVE_KEY); if(!jobId) return;
   try { const s=await fetch(`/api/transcribe/${jobId}/status`).then((r)=>r.json());
-    if(s.found && (s.status==="running"||s.status==="queued")){ $("jobCard").classList.remove("hidden");
-      $("jobName").textContent=s.name||"áudio"; $("player").classList.add("hidden"); connectStream(jobId); }
+    if(s.found && (s.status==="running"||s.status==="queued"||s.status==="fetching")){ $("jobCard").classList.remove("hidden");
+      $("jobName").textContent=(s.status==="fetching"?"Baixando do link…":(s.name||"áudio"));
+      $("startBtn").classList.add("hidden"); $("player").classList.add("hidden"); connectStream(jobId); }
     else localStorage.removeItem(ACTIVE_KEY);
   } catch(_){ localStorage.removeItem(ACTIVE_KEY); }
 }
