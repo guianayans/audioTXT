@@ -30,11 +30,10 @@ services:
       - audiotxt_data:/data
     restart: unless-stopped
     # Requer nvidia-container-toolkit no host (já presente neste servidor).
+    # O runtime da NVIDIA (gpus: all) reinjeta os nós /dev/nvidia* a cada start.
+    # Não fixamos os devices à mão: se o driver for recarregado (outro app,
+    # update), o nó antigo vira "invalid device ordinal" no container já de pé.
     gpus: all
-    devices:
-      - /dev/nvidia0:/dev/nvidia0
-      - /dev/nvidiactl:/dev/nvidiactl
-      - /dev/nvidia-uvm:/dev/nvidia-uvm
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8000/api/health']
       interval: 20s
