@@ -605,8 +605,31 @@ def download_result(job_id: str, ext: str, _: bool = Depends(require_auth)):
 # --------------------------------------------------------------------------
 # Resumo (LLM) de uma transcrição — sob demanda, salvo como .summary.md
 # --------------------------------------------------------------------------
-def _summary_md_path(job_id: str) -> str:
+def _summary_md_path(job_id: str, style: str = summarizer.DEFAULT_STYLE) -> str:
+    return os.path.join(RESULT_DIR, f"{job_id}.{style}.summary.md")
+
+
+def _legacy_summary_path(job_id: str) -> str:
     return os.path.join(RESULT_DIR, f"{job_id}.summary.md")
+
+
+def _summary_file_for(job_id: str, style: str) -> str | None:
+    """Caminho do resumo salvo para (job, estilo), com fallback ao formato antigo."""
+    p = _summary_md_path(job_id, style)
+    if os.path.isfile(p):
+        return p
+    legacy = _legacy_summary_path(job_id)
+    if os.path.isfile(legacy):
+        return legacy
+    return None
+
+
+def _summary_styles_on_disk(job_id: str) -> list[str]:
+    found = [s for s in summarizer.SUMMARY_STYLES
+             if os.path.isfile(_summary_md_path(job_id, s))]
+    if not found and os.path.isfile(_legacy_summary_path(job_id)):
+        found = [summarizer.DEFAULT_STYLE]
+    return found
 
 
 def _transcript_for(job_id: str) -> str | None:
@@ -620,34 +643,36 @@ def _transcript_for(job_id: str) -> str | None:
     return None
 
 
-def _summary_markdown(name: str, meta: dict, body: str) -> str:
+def _summary_markdown(name: str, meta: dict, body: str, style: str) -> str:
     when = time.strftime("%d/%m/%Y %H:%M", time.localtime(meta.get("date") or time.time()))
     model = meta.get("summary_model") or ""
+    label = summarizer.SUMMARY_STYLES.get(style, {}).get("label", "")
     head = f"# Resumo — {name}\n\n> Gerado por audioTXT · {when}"
+    if label:
+        head += f" · {label}"
     if model:
         head += f" · modelo {model}"
     return f"{head}\n\n{body.strip()}\n"
 
 
-def _run_summary(job_id: str, text: str, model_id: str):
+def _run_summary(job_id: str, text: str, model_id: str, style: str):
     sj = SUMMARY_JOBS[job_id]
     try:
-        body = summarizer.summarize(text, model_id,
+        body = summarizer.summarize(text, model_id, style,
                                     log=lambda m: sj["logs"].append(m))
-        meta = _load_meta(job_id) or {}
-        name = meta.get("base") or (JOBS.get(job_id, {}) or {}).get("name") or "transcrição"
-        name = os.path.splitext(name)[0]
-        meta_for_head = dict(meta)
-        meta_for_head["summary_model"] = summarizer.SUMMARY_BY_ID[model_id]["label"]
-        full = _summary_markdown(name, meta_for_head, body)
-        with open(_summary_md_path(job_id), "w", encoding="utf-8") as fh:
-            fh.write(full)
+        # salva só o corpo; o cabeçalho é montado no download
+        with open(_summary_md_path(job_id, style), "w", encoding="utf-8") as fh:
+            fh.write(body.strip() + "\n")
+        meta = _load_meta(job_id)
         if meta:
             meta["has_summary"] = True
             meta["summary_model"] = model_id
+            summaries = meta.get("summaries") or {}
+            summaries[style] = model_id
+            meta["summaries"] = summaries
             with open(_meta_path(job_id), "w", encoding="utf-8") as fh:
                 json.dump(meta, fh, ensure_ascii=False)
-        sj["md"] = full
+        sj["body"] = body.strip()
         sj["status"] = "done"
     except Exception as exc:
         sj["status"] = "error"
@@ -656,9 +681,27 @@ def _run_summary(job_id: str, text: str, model_id: str):
         summarizer.touch()
 
 
+def _norm_style(style: str) -> str:
+    return style if style in summarizer.SUMMARY_STYLES else summarizer.DEFAULT_STYLE
+
+
+@app.get("/api/summary/styles")
+def list_summary_styles(_: bool = Depends(require_auth)):
+    return {"styles": summarizer.styles_catalog(), "default": summarizer.DEFAULT_STYLE}
+
+
+@app.get("/api/summarize/active")
+def summaries_active(_: bool = Depends(require_auth)):
+    jobs = [{"job_id": jid, "style": sj.get("style", summarizer.DEFAULT_STYLE)}
+            for jid, sj in SUMMARY_JOBS.items() if sj.get("status") == "running"]
+    return {"jobs": jobs}
+
+
 @app.post("/api/summarize/{job_id}")
-def summarize_start(job_id: str, model: str = "", _: bool = Depends(require_auth)):
+def summarize_start(job_id: str, model: str = "", style: str = summarizer.DEFAULT_STYLE,
+                    _: bool = Depends(require_auth)):
     _check_id(job_id)
+    style = _norm_style(style)
     text = _transcript_for(job_id)
     if not text or not text.strip():
         raise HTTPException(404, "Transcrição não encontrada para resumir.")
@@ -667,12 +710,12 @@ def summarize_start(job_id: str, model: str = "", _: bool = Depends(require_auth
         raise HTTPException(400, "Baixe o modelo de resumo primeiro (aba Modelos).")
     sj = SUMMARY_JOBS.get(job_id)
     if sj and sj["status"] == "running":
-        return {"ok": True, "status": "running"}
-    SUMMARY_JOBS[job_id] = {"status": "running", "logs": [], "md": None,
-                            "error": None, "model": model_id}
-    threading.Thread(target=_run_summary, args=(job_id, text, model_id),
+        return {"ok": True, "status": "running", "style": sj.get("style", style)}
+    SUMMARY_JOBS[job_id] = {"status": "running", "logs": [], "body": None,
+                            "error": None, "model": model_id, "style": style}
+    threading.Thread(target=_run_summary, args=(job_id, text, model_id, style),
                      daemon=True).start()
-    return {"ok": True, "status": "running", "model": model_id}
+    return {"ok": True, "status": "running", "model": model_id, "style": style}
 
 
 @app.get("/api/summarize/{job_id}/stream")
@@ -687,14 +730,15 @@ def summarize_stream(job_id: str, _: bool = Depends(require_auth)):
             if not sj:
                 yield sse("error", {"message": "Resumo removido"})
                 return
+            style = sj.get("style", summarizer.DEFAULT_STYLE)
             while last_log < len(sj["logs"]):
-                yield sse("log", {"message": sj["logs"][last_log]})
+                yield sse("log", {"message": sj["logs"][last_log], "style": style})
                 last_log += 1
             if sj["status"] == "done":
-                yield sse("done", {"md": sj["md"], "job_id": job_id})
+                yield sse("done", {"md": sj["body"], "job_id": job_id, "style": style})
                 return
             if sj["status"] == "error":
-                yield sse("error", {"message": sj["error"] or "falha"})
+                yield sse("error", {"message": sj["error"] or "falha", "style": style})
                 return
             time.sleep(0.4)
 
@@ -702,18 +746,47 @@ def summarize_stream(job_id: str, _: bool = Depends(require_auth)):
                              headers=_sse_headers())
 
 
-@app.get("/api/summary/{job_id}.md")
-def download_summary(job_id: str, _: bool = Depends(require_auth)):
+@app.get("/api/summary/{job_id}/view")
+def view_summary(job_id: str, style: str = summarizer.DEFAULT_STYLE,
+                 _: bool = Depends(require_auth)):
     _check_id(job_id)
-    path = _summary_md_path(job_id)
-    if not os.path.isfile(path):
+    style = _norm_style(style)
+    path = _summary_file_for(job_id, style)
+    if not path:
         raise HTTPException(404, "Resumo não encontrado")
-    base = (_load_meta(job_id) or {}).get("base", "resumo")
+    with open(path, encoding="utf-8") as fh:
+        body = fh.read()
+    # arquivos antigos guardavam o cabeçalho junto; tira para exibir só o corpo
+    body = re.sub(r"^#\s*Resumo —.*?\n\n>[^\n]*\n\n", "", body, count=1, flags=re.S)
+    return {"job_id": job_id, "style": style, "md": body.strip()}
+
+
+@app.get("/api/summary/{job_id}.md")
+def download_summary(job_id: str, style: str = summarizer.DEFAULT_STYLE,
+                     _: bool = Depends(require_auth)):
+    _check_id(job_id)
+    style = _norm_style(style)
+    path = _summary_file_for(job_id, style)
+    if not path:
+        raise HTTPException(404, "Resumo não encontrado")
+    with open(path, encoding="utf-8") as fh:
+        body = fh.read().strip()
+    meta = _load_meta(job_id) or {}
+    name = os.path.splitext(meta.get("base") or "transcrição")[0]
+    meta_head = dict(meta)
+    mid = (meta.get("summaries") or {}).get(style) or meta.get("summary_model")
+    if mid in summarizer.SUMMARY_BY_ID:
+        meta_head["summary_model"] = summarizer.SUMMARY_BY_ID[mid]["label"]
+    # arquivos novos guardam só o corpo; os antigos já vêm com cabeçalho
+    full = body if body.lstrip().startswith("# Resumo") else \
+        _summary_markdown(name, meta_head, body, style)
+    base = os.path.splitext(meta.get("base", "resumo"))[0] or "resumo"
+    suffix = "-resumo" if style == summarizer.DEFAULT_STYLE else f"-resumo-{style}"
     ascii_base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("_") or "resumo"
-    disp = (f"attachment; filename=\"{ascii_base}-resumo.md\"; "
-            f"filename*=UTF-8''{quote(base + '-resumo.md')}")
-    return FileResponse(path, media_type="text/markdown; charset=utf-8",
-                        headers={"Content-Disposition": disp})
+    disp = (f"attachment; filename=\"{ascii_base}{suffix}.md\"; "
+            f"filename*=UTF-8''{quote(base + suffix + '.md')}")
+    return PlainTextResponse(full, media_type="text/markdown; charset=utf-8",
+                             headers={"Content-Disposition": disp})
 
 
 # --------------------------------------------------------------------------
@@ -756,9 +829,13 @@ def history_delete(job_id: str, _: bool = Depends(require_auth)):
         if os.path.isfile(p):
             os.remove(p)
             removed = True
-    sm = _summary_md_path(job_id)
-    if os.path.isfile(sm):
-        os.remove(sm)
+    for s in summarizer.SUMMARY_STYLES:
+        p = _summary_md_path(job_id, s)
+        if os.path.isfile(p):
+            os.remove(p)
+    legacy = _legacy_summary_path(job_id)
+    if os.path.isfile(legacy):
+        os.remove(legacy)
     JOBS.pop(job_id, None)
     SUMMARY_JOBS.pop(job_id, None)
     return {"ok": True, "removed": removed}

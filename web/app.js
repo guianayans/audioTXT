@@ -15,6 +15,10 @@ let SUMMARY_MODELS = [];
 let summaryDefault = null;
 const activeSummaryDownloads = {};
 let summaryES = null;
+let SUMMARY_STYLES = [];
+let selectedStyle = "completo";
+const summaryCache = {};              // { jobId: { style: corpo } }
+const libSummaryES = {};              // streams de resumo religados na biblioteca
 
 const TAGS = { tiny: "Rápido", base: "Rápido", small: "Equilíbrio",
   medium: "Preciso", "large-v3-turbo": "Turbo", "large-v3": "Máxima precisão" };
@@ -79,9 +83,11 @@ async function init() {
   $("accountMail").textContent = "Sessão ativa";
   await loadModels(cfg.default_model);
   loadSummaryModels();
+  await loadSummaryStyles();
   startMetrics();
-  loadHistory();
+  await loadHistory();
   resumeActive();
+  reconnectSummaries();
 }
 
 // ---------- modelos ----------
@@ -580,15 +586,53 @@ function activateTab(name){
   document.querySelectorAll(".tab-panel").forEach((p)=>p.classList.add("hidden"));
   const panel=$("panel-"+name); if(panel) panel.classList.remove("hidden");
 }
+async function loadSummaryStyles(){
+  try { const d=await fetch("/api/summary/styles").then((r)=>r.json());
+    SUMMARY_STYLES=d.styles||[]; selectedStyle=d.default||"completo"; }
+  catch(_){ SUMMARY_STYLES=[{id:"completo",label:"Completo"},{id:"topicos",label:"Em tópicos"}]; }
+  renderStylePills();
+}
+function renderStylePills(){
+  const wrap=$("summaryStyles"); if(!wrap) return; wrap.innerHTML="";
+  SUMMARY_STYLES.forEach((s)=>{
+    const b=document.createElement("button"); b.type="button";
+    b.className="style-pill"+(s.id===selectedStyle?" active":""); b.dataset.style=s.id;
+    b.textContent=s.label; b.title=s.desc||"";
+    b.onclick=()=>{ if(selectedStyle===s.id) return; selectedStyle=s.id; renderStylePills(); showStyleForCurrent(); };
+    wrap.appendChild(b);
+  });
+}
+function summaryIsRunning(){ return summaryES!=null; }
+// Mostra o resumo do estilo selecionado para o job atual: cache → servidor → vazio.
+async function showStyleForCurrent(){
+  if(summaryIsRunning()) return;            // não atropela uma geração em curso
+  if(!currentJob){ summaryPlaceholder(); return; }
+  const cached=(summaryCache[currentJob]||{})[selectedStyle];
+  if(cached!=null){ renderSummaryDone(currentJob, selectedStyle, cached); return; }
+  try {
+    const r=await fetch(`/api/summary/${currentJob}/view?style=${selectedStyle}`);
+    if(r.ok){ const d=await r.json(); (summaryCache[currentJob]=summaryCache[currentJob]||{})[selectedStyle]=d.md;
+      renderSummaryDone(currentJob, selectedStyle, d.md); return; }
+  } catch(_){}
+  summaryPlaceholder();                     // ainda não gerado neste estilo
+}
+function summaryPlaceholder(){
+  $("genSummaryBtn").disabled=false; $("genSummaryBtn").textContent="✦ Gerar resumo";
+  $("dlSummaryBtn").classList.add("hidden"); $("summaryStage").textContent="";
+  $("summaryBody").innerHTML='<p class="muted placeholder">Escolha o tipo de resumo e gere com IA rodando na sua GPU. O resultado pode ser baixado em Markdown (.md).</p>';
+}
+function renderSummaryDone(jobId, style, body){
+  $("genSummaryBtn").disabled=false; $("genSummaryBtn").textContent="✦ Gerar de novo";
+  $("summaryStage").textContent="";
+  $("summaryBody").innerHTML=mdToHtml(body||"");
+  const a=$("dlSummaryBtn"); a.href=`/api/summary/${jobId}.md?style=${style}`; a.classList.remove("hidden");
+}
 function resetSummaryTab(){
   if(summaryES){ summaryES.close(); summaryES=null; }
-  $("genSummaryBtn").disabled=false; $("genSummaryBtn").textContent="✦ Gerar resumo";
-  $("dlSummaryBtn").classList.add("hidden"); $("dlSummaryBtn").removeAttribute("href");
-  $("summaryStage").textContent="";
-  $("summaryBody").innerHTML='<p class="muted placeholder">Gere um resumo dos pontos principais desta transcrição, com IA rodando na sua GPU. O resultado pode ser baixado em Markdown (.md).</p>';
+  showStyleForCurrent();
 }
-$("genSummaryBtn").addEventListener("click", generateSummary);
-function generateSummary(){
+$("genSummaryBtn").addEventListener("click", ()=>generateSummary(selectedStyle));
+function generateSummary(style){
   if(!currentJob){ toast("Transcreva algo primeiro"); return; }
   const model=summaryModelToUse();
   if(!model){ toast("Baixe um modelo de resumo primeiro (aba Modelos)"); switchView("models"); return; }
@@ -596,25 +640,36 @@ function generateSummary(){
   $("summaryStage").textContent="Iniciando…";
   $("summaryBody").innerHTML='<p class="muted placeholder">Gerando o resumo… isso usa a GPU e pode levar alguns segundos.</p>';
   activateTab("summary");
-  fetch(`/api/summarize/${currentJob}?model=${encodeURIComponent(model)}`,{method:"POST"})
+  fetch(`/api/summarize/${currentJob}?model=${encodeURIComponent(model)}&style=${style}`,{method:"POST"})
     .then(async (r)=>{ if(!r.ok){ let d="Falha"; try{d=(await r.json()).detail||d;}catch(_){ } throw new Error(d);} return r.json(); })
-    .then(()=>connectSummaryStream(currentJob))
+    .then(()=>connectSummaryStream(currentJob, style))
     .catch((err)=>{ $("genSummaryBtn").disabled=false; $("summaryStage").textContent="";
-      $("summaryBody").innerHTML='<p class="muted placeholder">Não foi possível gerar o resumo.</p>';
+      summaryPlaceholder();
       toast("⚠ "+(err&&err.message?err.message:"falha")); });
 }
-function connectSummaryStream(jobId){
+function connectSummaryStream(jobId, style){
   if(summaryES){ summaryES.close(); }
   const es=new EventSource(`/api/summarize/${jobId}/stream`); summaryES=es;
   es.addEventListener("log",(e)=>{ $("summaryStage").textContent=JSON.parse(e.data).message; });
   es.addEventListener("done",(e)=>{ const d=JSON.parse(e.data); es.close(); summaryES=null;
-    $("genSummaryBtn").disabled=false; $("genSummaryBtn").textContent="✦ Gerar de novo";
-    $("summaryStage").textContent="Concluído ✓"; $("summaryBody").innerHTML=mdToHtml(d.md||"");
-    const a=$("dlSummaryBtn"); a.href=`/api/summary/${jobId}.md`; a.classList.remove("hidden");
+    const st=d.style||style;
+    (summaryCache[jobId]=summaryCache[jobId]||{})[st]=d.md||"";
+    if(jobId===currentJob && st===selectedStyle) renderSummaryDone(jobId, st, d.md||"");
     loadHistory(); toast("Resumo pronto ✓"); });
   es.addEventListener("error",(e)=>{ let msg="falha"; try{msg=JSON.parse(e.data).message;}catch(_){ }
     es.close(); summaryES=null; $("genSummaryBtn").disabled=false;
     $("summaryStage").textContent="Erro: "+msg; toast("⚠ "+msg); });
+}
+// Religa os resumos que continuaram rodando no servidor (após refresh).
+async function reconnectSummaries(){
+  let data; try { data=await fetch("/api/summarize/active").then((r)=>r.json()); } catch(_){ return; }
+  (data.jobs||[]).forEach((j)=>{
+    if(j.job_id===currentJob){ selectedStyle=j.style; renderStylePills();
+      $("genSummaryBtn").disabled=true; $("summaryStage").textContent="Gerando…";
+      $("summaryBody").innerHTML='<p class="muted placeholder">Retomando o resumo em andamento…</p>';
+      connectSummaryStream(j.job_id, j.style); }
+    else attachLibrarySummary(j.job_id, j.style);
+  });
 }
 // Markdown mínimo (títulos, listas, negrito, código) para exibir o resumo.
 function mdToHtml(md){
@@ -647,16 +702,28 @@ function renderHistory(items){
       </div><div class="hist-actions">
       <a class="m-btn" href="/api/result/${m.job_id}.txt" download>.txt</a>
       <a class="m-btn" href="/api/result/${m.job_id}.srt" download>.srt</a>
-      ${m.has_summary ? `<a class="m-btn m-md" href="/api/summary/${m.job_id}.md" download title="Resumo em Markdown">.md</a>`
-        : `<button class="m-btn hist-sum" type="button" title="Gerar resumo com IA">✦ resumo</button>`}
+      ${histSummaryActions(m)}
       <button class="m-btn hist-del" type="button" title="Apagar">✕</button></div></div>
       <div class="hist-body"></div>`;
     row.querySelector(".hist-head").addEventListener("click",(e)=>{ if(e.target.closest("a")||e.target.closest("button")) return;
       toggleHist(row,m.job_id); });
     row.querySelector(".hist-del").onclick=()=>delHist(m.job_id,m.orig_name);
-    const sb=row.querySelector(".hist-sum"); if(sb) sb.onclick=()=>genHistSummary(m.job_id,row);
+    row.querySelectorAll(".hist-sum").forEach((b)=>{ b.onclick=()=>genHistSummary(m.job_id,row,b.dataset.style); });
     wrap.appendChild(row);
+    if(libSummaryES[m.job_id]){ const b=row.querySelector(".hist-sum"); if(b){ b.disabled=true; b.textContent="gerando…"; } }
   });
+}
+function shortStyle(id){ return id==="topicos" ? "tópicos" : "resumo"; }
+function histSummaryActions(m){
+  const styles = SUMMARY_STYLES.length ? SUMMARY_STYLES
+    : [{id:"completo",label:"Completo"},{id:"topicos",label:"Em tópicos"}];
+  const have = m.summaries || (m.has_summary ? {completo:true} : {});
+  let html="";
+  styles.forEach((s)=>{ if(have[s.id])
+    html += `<a class="m-btn m-md" href="/api/summary/${m.job_id}.md?style=${s.id}" download title="Baixar resumo ${s.label} (.md)">⬇ ${shortStyle(s.id)}</a>`; });
+  const missing = styles.find((s)=>!have[s.id]);
+  if(missing) html += `<button class="m-btn hist-sum" type="button" data-style="${missing.id}" title="Gerar resumo ${missing.label}">✦ ${shortStyle(missing.id)}</button>`;
+  return html;
 }
 async function toggleHist(row,id){
   const body=row.querySelector(".hist-body");
@@ -665,18 +732,28 @@ async function toggleHist(row,id){
   try { const d=await fetch(`/api/history/${id}`).then((r)=>r.json()); body.textContent=d.text||"(vazio)"; }
   catch(_){ body.innerHTML='<p class="muted tiny">erro ao carregar</p>'; }
 }
-function genHistSummary(id,row){
+function genHistSummary(id,row,style){
+  style = style || "completo";
   const model=summaryModelToUse();
   if(!model){ toast("Baixe um modelo de resumo primeiro (aba Modelos)"); switchView("models"); return; }
   const btn=row.querySelector(".hist-sum"); if(btn){ btn.disabled=true; btn.textContent="gerando…"; }
-  fetch(`/api/summarize/${id}?model=${encodeURIComponent(model)}`,{method:"POST"})
+  fetch(`/api/summarize/${id}?model=${encodeURIComponent(model)}&style=${style}`,{method:"POST"})
     .then(async (r)=>{ if(!r.ok){ let d="Falha"; try{d=(await r.json()).detail||d;}catch(_){ } throw new Error(d);} return r.json(); })
-    .then(()=>{ const es=new EventSource(`/api/summarize/${id}/stream`);
-      es.addEventListener("log",(e)=>{ if(btn) btn.textContent=JSON.parse(e.data).message.slice(0,14); });
-      es.addEventListener("done",()=>{ es.close(); toast("Resumo pronto ✓"); loadHistory(); });
-      es.addEventListener("error",(e)=>{ let m="falha"; try{m=JSON.parse(e.data).message;}catch(_){ }
-        es.close(); if(btn){ btn.disabled=false; btn.textContent="✦ resumo"; } toast("⚠ "+m); }); })
-    .catch((err)=>{ if(btn){ btn.disabled=false; btn.textContent="✦ resumo"; } toast("⚠ "+(err&&err.message?err.message:"falha")); });
+    .then(()=>attachLibrarySummary(id, style))
+    .catch((err)=>{ if(btn){ btn.disabled=false; btn.textContent="✦ "+shortStyle(style); } toast("⚠ "+(err&&err.message?err.message:"falha")); });
+}
+// Acompanha (ou religa) um resumo rodando no servidor e atualiza a biblioteca.
+function attachLibrarySummary(id, style){
+  if(libSummaryES[id]) return;
+  const es=new EventSource(`/api/summarize/${id}/stream`); libSummaryES[id]=es;
+  const setBtn=(txt,dis)=>{ const row=document.querySelector(`.hist-item[data-id="${id}"]`);
+    const b=row&&row.querySelector(".hist-sum"); if(b){ b.disabled=dis; b.textContent=txt; } };
+  setBtn("gerando…", true);
+  es.addEventListener("done",(e)=>{ let st=style; try{st=JSON.parse(e.data).style||style;}catch(_){ }
+    es.close(); delete libSummaryES[id]; if(summaryCache[id]) delete summaryCache[id];
+    loadHistory(); toast("Resumo pronto ✓"); });
+  es.addEventListener("error",(e)=>{ let m="falha"; try{m=JSON.parse(e.data).message;}catch(_){ }
+    es.close(); delete libSummaryES[id]; setBtn("✦ "+shortStyle(style), false); toast("⚠ "+m); });
 }
 function delHist(id,name){ if(!confirm(`Apagar a transcrição de "${name||"áudio"}"?`)) return;
   fetch(`/api/history/${id}`,{method:"DELETE"}).finally(()=>{ loadHistory(); toast("Transcrição apagada"); }); }

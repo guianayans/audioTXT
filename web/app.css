@@ -383,3 +383,13 @@ canvas { display: block; width: 100%; }
 .summary-body p { margin: 8px 0; }
 .summary-body code { background: var(--card2); padding: 1px 5px; border-radius: 5px; font-size: .9em; }
 .m-btn.m-md { color: var(--accent2); border-color: var(--accent2); }
+.m-btn.hist-sum { color: var(--accent); border-color: var(--brd); min-width: 86px; text-align: center; }
+.m-btn.hist-sum:disabled { opacity: .7; cursor: default; }
+/* seletor de tipo de resumo */
+.style-pills { display: inline-flex; gap: 6px; margin-right: 4px; }
+.style-pill { border: 1px solid var(--brd); background: var(--card); color: var(--muted);
+  font-size: 12.5px; font-weight: 600; padding: 7px 13px; border-radius: 999px; cursor: pointer; transition: var(--t); }
+.style-pill:hover { border-color: var(--accent); color: var(--txt); }
+.style-pill.active { background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-color: transparent; color: #fff; }
+.summary-head { flex-wrap: wrap; gap: 10px; }

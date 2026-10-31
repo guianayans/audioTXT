@@ -294,14 +294,42 @@ def _ensure_loaded(model_id: str, log=lambda *_: None, prefer_cpu: bool = False)
 # ----------------------------------------------------------------------------
 # Resumo propriamente dito.
 # ----------------------------------------------------------------------------
-_SYS_FINAL = ("Você é um assistente que resume transcrições de áudio em português "
-              "do Brasil, de forma fiel e objetiva. Nunca invente informações que "
-              "não estejam no conteúdo.")
-_SYS_MAP = ("Você resume trechos de transcrições de áudio em português do Brasil. "
-            "Extraia apenas os pontos e fatos relevantes do trecho, em tópicos "
-            "curtos. Não invente nada.")
+# Compartilhado pelos dois estilos no modo map-reduce (áudios longos).
+_SYS_MAP = ("Você resume trechos de transcrições de áudio em português do Brasil, "
+            "de forma detalhada e fiel. Capture todos os pontos, fatos, argumentos, "
+            "nomes, números, datas e exemplos do trecho, sem inventar nada.")
 
-_FINAL_INSTRUCT = (
+# --- Estilo "completo": o leitor entende tudo sem ouvir o áudio ---------------
+_SYS_COMPLETO = ("Você é um assistente que resume transcrições de áudio em português "
+                 "do Brasil. Seu resumo precisa ser COMPLETO e fiel: quem ler apenas "
+                 "o resumo deve entender tudo o que foi dito, sem precisar ouvir o "
+                 "áudio. Explique as ideias com suas próprias palavras, preserve a "
+                 "ordem, o contexto e a linha de raciocínio, e nunca invente nada que "
+                 "não esteja no conteúdo.")
+_INSTRUCT_COMPLETO = (
+    "A seguir está {kind} de um áudio. Escreva um resumo COMPLETO em Markdown, "
+    "detalhado o bastante para o leitor entender todo o conteúdo sem ouvir o "
+    "áudio. Use exatamente estas seções, nesta ordem:\n\n"
+    "## Visão geral\n(1 parágrafo situando o tema central, o tipo de áudio e o "
+    "contexto)\n\n"
+    "## Resumo detalhado\n(Vários parágrafos cobrindo o que foi dito na ordem em "
+    "que aparece, com os argumentos, explicações e exemplos. Esta é a parte mais "
+    "importante e deve ser a mais longa: desenvolva cada assunto, não resuma em "
+    "uma frase só.)\n\n"
+    "## Pontos principais\n- (os pontos mais importantes, em tópicos)\n\n"
+    "## Dados, nomes e números citados\n- (fatos específicos mencionados: nomes, "
+    "datas, valores, lugares; se não houver, escreva \"Nenhum.\")\n\n"
+    "## Decisões e próximos passos\n- (ações, prazos e responsáveis; se não houver, "
+    "escreva \"Nenhuma identificada.\")\n\n"
+    "Responda só com o Markdown, sem comentários antes ou depois.\n\n"
+    "Conteúdo:\n\n{content}"
+)
+
+# --- Estilo "topicos": resumo enxuto em tópicos -------------------------------
+_SYS_TOPICOS = ("Você é um assistente que resume transcrições de áudio em português "
+                "do Brasil, de forma fiel e objetiva. Nunca invente informações que "
+                "não estejam no conteúdo.")
+_INSTRUCT_TOPICOS = (
     "A seguir está {kind} de um áudio. Escreva um resumo em Markdown, usando "
     "exatamente estas seções e nesta ordem:\n\n"
     "## Resumo\n(2 a 4 frases com a ideia geral)\n\n"
@@ -313,6 +341,25 @@ _FINAL_INSTRUCT = (
     "Conteúdo:\n\n{content}"
 )
 
+SUMMARY_STYLES = {
+    "completo": {
+        "label": "Completo",
+        "desc": "Para entender tudo sem ouvir o áudio",
+        "sys": _SYS_COMPLETO, "instruct": _INSTRUCT_COMPLETO, "out": 2048,
+    },
+    "topicos": {
+        "label": "Em tópicos",
+        "desc": "Resumo enxuto, direto ao ponto",
+        "sys": _SYS_TOPICOS, "instruct": _INSTRUCT_TOPICOS, "out": 1100,
+    },
+}
+DEFAULT_STYLE = "completo"
+
+
+def styles_catalog() -> list[dict]:
+    return [{"id": k, "label": v["label"], "desc": v["desc"]}
+            for k, v in SUMMARY_STYLES.items()]
+
 
 def _chunks(llm, text: str, size_tokens: int):
     toks = llm.tokenize(text.encode("utf-8"), add_bos=False, special=False)
@@ -323,20 +370,24 @@ def _chunks(llm, text: str, size_tokens: int):
     return
 
 
-def summarize(text: str, model_id: str, log=lambda *_: None) -> str:
+def summarize(text: str, model_id: str, style: str = DEFAULT_STYLE,
+              log=lambda *_: None) -> str:
     """Devolve o corpo do resumo em Markdown (sem o cabeçalho com metadados).
 
-    Se a GPU falhar por contexto inválido (ex.: driver recarregado por outro
-    app), descarrega e refaz o resumo na CPU — sem derrubar a operação.
+    `style` é "completo" (detalhado) ou "topicos" (enxuto). Se a GPU falhar por
+    contexto inválido (ex.: driver recarregado por outro app), descarrega e
+    refaz o resumo na CPU — sem derrubar a operação.
     """
     text = (text or "").strip()
     if not text:
         raise RuntimeError("Transcrição vazia — nada para resumir.")
+    if style not in SUMMARY_STYLES:
+        style = DEFAULT_STYLE
     prefer_cpu = False
     for attempt in range(2):
         llm = _ensure_loaded(model_id, log=log, prefer_cpu=prefer_cpu)
         try:
-            return _run_summary(llm, text, log=log)
+            return _run_summary(llm, text, style, log=log)
         except Exception as exc:
             if attempt == 0 and _loaded_device == "GPU" and _is_cuda_error(exc):
                 log(f"Erro de GPU ({str(exc)[:80]}). Recarregando o resumo na CPU…")
@@ -346,11 +397,13 @@ def summarize(text: str, model_id: str, log=lambda *_: None) -> str:
             raise
 
 
-def _run_summary(llm, text: str, log=lambda *_: None) -> str:
+def _run_summary(llm, text: str, style: str, log=lambda *_: None) -> str:
+    spec = SUMMARY_STYLES[style]
     with summarize_lock:
         touch()
+        out_budget = spec["out"]
+        single_budget = max(1024, N_CTX - out_budget - 500)  # input + prompt + saída
         n_tokens = len(llm.tokenize(text.encode("utf-8"), add_bos=False, special=False))
-        single_budget = max(1024, N_CTX - 1400)  # espaço para prompt + saída
         if n_tokens <= single_budget:
             content, kind = text, "a transcrição"
         else:
@@ -362,19 +415,25 @@ def _run_summary(llm, text: str, log=lambda *_: None) -> str:
                 r = llm.create_chat_completion(
                     messages=[{"role": "system", "content": _SYS_MAP},
                               {"role": "user",
-                               "content": f"Trecho:\n\n{part}\n\nListe em tópicos os "
-                                          "pontos relevantes deste trecho."}],
-                    max_tokens=500, temperature=0.2)
+                               "content": f"Trecho:\n\n{part}\n\nResuma este trecho em "
+                                          "tópicos detalhados, preservando os fatos, "
+                                          "nomes, números e a linha de raciocínio."}],
+                    max_tokens=700, temperature=0.2)
                 notes.append(r["choices"][0]["message"]["content"].strip())
                 touch()
-            content, kind = "\n\n".join(notes), "o conjunto de anotações dos trechos"
+            content = "\n\n".join(notes)
+            kind = "o conjunto de anotações dos trechos"
+            # não deixa as anotações estourarem o contexto do passo final
+            ctoks = llm.tokenize(content.encode("utf-8"), add_bos=False, special=False)
+            if len(ctoks) > single_budget:
+                content = llm.detokenize(ctoks[:single_budget]).decode("utf-8", "ignore")
 
         log("Montando o resumo final…")
         out = llm.create_chat_completion(
-            messages=[{"role": "system", "content": _SYS_FINAL},
+            messages=[{"role": "system", "content": spec["sys"]},
                       {"role": "user",
-                       "content": _FINAL_INSTRUCT.format(kind=kind, content=content)}],
-            max_tokens=1100, temperature=0.3)
+                       "content": spec["instruct"].format(kind=kind, content=content)}],
+            max_tokens=out_budget, temperature=0.3)
         md = out["choices"][0]["message"]["content"].strip()
     touch()
     return md
