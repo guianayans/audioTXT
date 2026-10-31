@@ -207,6 +207,53 @@ _load_lock = threading.Lock()
 # Impede duas transcrições simultâneas (a GPU não tem memória sobrando).
 transcribe_lock = threading.Lock()
 
+# GPU só sob demanda: o modelo é carregado na primeira transcrição e descarregado
+# depois de AUDIOTXT_IDLE_UNLOAD_SECONDS sem uso (padrão 5 min; 0 = nunca), para
+# liberar a VRAM para outros apps do servidor. A próxima transcrição carrega de novo.
+IDLE_UNLOAD_SECONDS = float(os.environ.get("AUDIOTXT_IDLE_UNLOAD_SECONDS", "300") or 0)
+_last_used = 0.0
+
+
+def touch() -> None:
+    """Marca o modelo como usado agora (adia a descarga por ociosidade)."""
+    global _last_used
+    _last_used = time.time()
+
+
+def unload_model() -> bool:
+    """Tira o modelo da memória (e da GPU). Devolve True se havia um carregado."""
+    global _loaded
+    with _load_lock:
+        if _loaded is None:
+            return False
+        _loaded = None
+        import gc
+        gc.collect()
+        return True
+
+
+def _idle_watcher() -> None:
+    while True:
+        time.sleep(30)
+        if IDLE_UNLOAD_SECONDS <= 0 or _loaded is None:
+            continue
+        if time.time() - _last_used < IDLE_UNLOAD_SECONDS:
+            continue
+        # nunca no meio de uma transcrição: só com a fila vazia
+        if not transcribe_lock.acquire(blocking=False):
+            continue
+        try:
+            if _loaded is not None and time.time() - _last_used >= IDLE_UNLOAD_SECONDS:
+                model_id = _loaded.model_id
+                if unload_model():
+                    print(f"[audiotxt] {model_id} descarregado após "
+                          f"{int(IDLE_UNLOAD_SECONDS)} s sem uso (GPU liberada)", flush=True)
+        finally:
+            transcribe_lock.release()
+
+
+threading.Thread(target=_idle_watcher, name="idle-unload", daemon=True).start()
+
 
 def active_device() -> str:
     return _loaded.device if _loaded else ""
@@ -219,6 +266,7 @@ def load_model(model_id: str, log=lambda *_: None) -> LoadedModel:
     """
     global _loaded
     with _load_lock:
+        touch()
         if _loaded and _loaded.model_id == model_id:
             return _loaded
 

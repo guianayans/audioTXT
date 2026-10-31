@@ -19,6 +19,8 @@ services:
       # —— modelo e dispositivo ——
       AUDIOTXT_DEFAULT_MODEL: ${AUDIOTXT_DEFAULT_MODEL:-large-v3-turbo}
       AUDIOTXT_DEVICE: ${AUDIOTXT_DEVICE:-auto}
+      # descarrega o modelo da GPU após N segundos sem transcrição (0 = nunca); a próxima carrega de novo
+      AUDIOTXT_IDLE_UNLOAD_SECONDS: ${AUDIOTXT_IDLE_UNLOAD_SECONDS:-300}
       AUDIOTXT_DATA_DIR: /data
       HF_HOME: /data/hf
       # —— GPU ——

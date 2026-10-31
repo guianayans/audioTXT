@@ -350,6 +350,7 @@ def _run_job(job_id: str, model_id: str, language: str, task: str):
         except OSError:
             pass
     finally:
+        transcriber.touch()  # a contagem para descarregar o modelo começa ao fim da transcrição
         transcriber.transcribe_lock.release()
 
 
