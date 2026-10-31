@@ -11,6 +11,10 @@ let currentFile = null;     // File escolhido (p/ enviar)
 let objURL = null;          // URL local do áudio (player)
 let wavePeaks = null;
 const activeDownloads = {};
+let SUMMARY_MODELS = [];
+let summaryDefault = null;
+const activeSummaryDownloads = {};
+let summaryES = null;
 
 const TAGS = { tiny: "Rápido", base: "Rápido", small: "Equilíbrio",
   medium: "Preciso", "large-v3-turbo": "Turbo", "large-v3": "Máxima precisão" };
@@ -73,6 +77,7 @@ async function init() {
   $("setMail").textContent = "Sessão por senha";
   $("accountMail").textContent = "Sessão ativa";
   await loadModels(cfg.default_model);
+  loadSummaryModels();
   startMetrics();
   loadHistory();
   resumeActive();
@@ -140,6 +145,57 @@ function deleteModel(id){ const m=MODELS.find((x)=>x.id===id);
   fetch(`/api/models/${id}`,{method:"DELETE"}).finally(()=>{ markDownloaded(id,false); toast("Modelo apagado"); }); }
 function markDownloaded(id,val){ const m=MODELS.find((x)=>x.id===id); if(m){ m.downloaded=val; renderAction(m);
   if(id===selectedModel) selectModel(id); } }
+
+// ---------- modelos de resumo (LLM) ----------
+async function loadSummaryModels(){
+  let data; try{ data=await fetch("/api/summary/models").then((r)=>r.json()); }catch(_){ return; }
+  SUMMARY_MODELS=data.models||[]; summaryDefault=data.default; renderSummaryModels();
+}
+const sumCard=(id)=>document.querySelector(`#summaryModelGrid .model[data-id="${id}"]`);
+const sumActionEl=(id)=>sumCard(id)&&sumCard(id).querySelector(".m-action");
+function renderSummaryModels(){
+  const grid=$("summaryModelGrid"); if(!grid) return; grid.innerHTML="";
+  SUMMARY_MODELS.forEach((m)=>{
+    const el=document.createElement("div"); el.className="model"; el.dataset.id=m.id;
+    el.innerHTML=`<div class="m-info"><div class="m-top"><span class="m-name">${m.label}</span>
+      <span class="m-size">${sizeGB(m.size_mb)} GB</span></div><div class="m-desc">${m.desc}</div></div>
+      <div class="m-action"></div>`;
+    grid.appendChild(el); renderSummaryAction(m);
+  });
+}
+function renderSummaryAction(m){
+  const el=sumActionEl(m.id); if(!el) return;
+  if(m.downloaded){ el.innerHTML=`<span class="badge-on">no servidor</span>
+    <button class="m-btn m-del" type="button">Apagar</button>`;
+    el.querySelector(".m-del").onclick=()=>deleteSummaryModel(m.id); }
+  else { el.innerHTML=`<button class="m-btn m-get" type="button">Baixar modelo</button>`;
+    el.querySelector(".m-get").onclick=()=>startSummaryDownload(m.id); }
+}
+function startSummaryDownload(id){
+  const el=sumActionEl(id);
+  el.innerHTML=`<div class="dl-row"><div class="dl-bar"><i></i></div><span class="dl-pct">iniciando…</span>
+    <button class="m-btn m-cancel" type="button">Cancelar</button></div>`;
+  const bar=el.querySelector(".dl-bar i"), pct=el.querySelector(".dl-pct");
+  el.querySelector(".m-cancel").onclick=()=>cancelSummaryDownload(id);
+  const es=new EventSource(`/api/summary/models/${id}/download`); activeSummaryDownloads[id]=es;
+  es.addEventListener("progress",(e)=>{ const d=JSON.parse(e.data); bar.style.width=d.percent+"%";
+    pct.textContent=`${d.percent}% · ${sizeGB(d.mb)} GB`; });
+  es.addEventListener("done",()=>{ es.close(); delete activeSummaryDownloads[id]; markSummaryDownloaded(id,true); toast("Modelo de resumo baixado ✓"); });
+  es.addEventListener("cancelled",()=>{ es.close(); delete activeSummaryDownloads[id]; markSummaryDownloaded(id,false); });
+  es.addEventListener("error",(e)=>{ let msg="erro"; try{msg=JSON.parse(e.data).message;}catch(_){}
+    es.close(); delete activeSummaryDownloads[id]; markSummaryDownloaded(id,false);
+    if(msg&&msg!=="erro") toast("Falha no download: "+msg); });
+}
+function cancelSummaryDownload(id){ const es=activeSummaryDownloads[id]; if(es){es.close(); delete activeSummaryDownloads[id];}
+  const el=sumActionEl(id); if(el) el.innerHTML=`<span class="badge-dl">cancelando…</span>`;
+  fetch(`/api/summary/models/${id}/cancel`,{method:"POST"}).finally(()=>markSummaryDownloaded(id,false)); }
+function deleteSummaryModel(id){ const m=SUMMARY_MODELS.find((x)=>x.id===id);
+  if(!confirm(`Apagar o modelo "${m?m.label:id}" do servidor?`)) return;
+  const el=sumActionEl(id); if(el) el.innerHTML=`<span class="badge-dl">apagando…</span>`;
+  fetch(`/api/summary/models/${id}`,{method:"DELETE"}).finally(()=>{ markSummaryDownloaded(id,false); toast("Modelo apagado"); }); }
+function markSummaryDownloaded(id,val){ const m=SUMMARY_MODELS.find((x)=>x.id===id); if(m){ m.downloaded=val; renderSummaryAction(m); } }
+function summaryModelToUse(){ const d=SUMMARY_MODELS.find((m)=>m.id===summaryDefault&&m.downloaded); if(d) return d.id;
+  const any=SUMMARY_MODELS.find((m)=>m.downloaded); return any?any.id:null; }
 
 // ---------- upload / arquivo ----------
 const dz = $("dropzone");
@@ -424,6 +480,7 @@ function fail(msg){ $("stageLabel").textContent="Erro: "+msg; $("startBtn").disa
 
 function connectStream(jobId){
   currentJob=jobId; currentSegments=[]; $("startBtn").disabled=true;
+  resetSummaryTab();
   resetProc("Retomando…"); setProgress(0,true);
   const t=$("transcript");
   const es=new EventSource(`/api/transcribe/${jobId}/stream`);
@@ -462,6 +519,9 @@ function buildSegmentsPlain(){
     `<span class="ts">[${fmtClock(s.start)}]</span> ${esc(s.text.trim())}`).join("\n");
 }
 function collectText(){ return [...document.querySelectorAll("#transcript .seg-text")].map((e)=>e.innerText.trim()).join(" "); }
+// Uma frase por linha (mesma lógica do servidor): junta tudo e quebra após . ! ? …
+function toLines(text){ text=(text||"").replace(/\s+/g," ").trim(); if(!text) return "";
+  return text.split(/(?<=[.!?…])\s+/).map((s)=>s.trim()).filter(Boolean).join("\n"); }
 function collectSegEdited(){ return [...document.querySelectorAll("#transcript .seg-row")].map((row)=>({
   start:parseFloat(row.dataset.start), end:parseFloat(row.dataset.end), text:row.querySelector(".seg-text").innerText.trim() })); }
 
@@ -502,7 +562,7 @@ $("exportBtn").addEventListener("click",(e)=>{ e.stopPropagation(); $("exportMen
 document.querySelectorAll("#exportMenu button").forEach((b)=>b.addEventListener("click",()=>{
   $("exportMenu").classList.remove("open");
   const base=(($("jobName").textContent||"transcricao").replace(/\.[^.]+$/,""))||"transcricao";
-  if(b.dataset.exp==="txt") downloadBlob(collectText(), base+".txt");
+  if(b.dataset.exp==="txt") downloadBlob(toLines(collectText()), base+".txt");
   else downloadBlob(buildSRT(collectSegEdited()), base+".srt");
 }));
 function srtTime(s){ s=Math.max(0,s); const ms=Math.round(s*1000); const h=Math.floor(ms/3600000),
@@ -512,6 +572,60 @@ function buildSRT(segs){ return segs.map((s,i)=>`${i+1}\n${srtTime(s.start)} -->
 function downloadBlob(text,name){ const b=new Blob([text],{type:"text/plain;charset=utf-8"});
   const u=URL.createObjectURL(b); const a=document.createElement("a"); a.href=u; a.download=name; a.click();
   setTimeout(()=>URL.revokeObjectURL(u),1000); }
+
+// ---------- resumo (LLM) ----------
+function activateTab(name){
+  document.querySelectorAll(".tab").forEach((t)=>t.classList.toggle("active", t.dataset.tab===name));
+  document.querySelectorAll(".tab-panel").forEach((p)=>p.classList.add("hidden"));
+  const panel=$("panel-"+name); if(panel) panel.classList.remove("hidden");
+}
+function resetSummaryTab(){
+  if(summaryES){ summaryES.close(); summaryES=null; }
+  $("genSummaryBtn").disabled=false; $("genSummaryBtn").textContent="✦ Gerar resumo";
+  $("dlSummaryBtn").classList.add("hidden"); $("dlSummaryBtn").removeAttribute("href");
+  $("summaryStage").textContent="";
+  $("summaryBody").innerHTML='<p class="muted placeholder">Gere um resumo dos pontos principais desta transcrição, com IA rodando na sua GPU. O resultado pode ser baixado em Markdown (.md).</p>';
+}
+$("genSummaryBtn").addEventListener("click", generateSummary);
+function generateSummary(){
+  if(!currentJob){ toast("Transcreva algo primeiro"); return; }
+  const model=summaryModelToUse();
+  if(!model){ toast("Baixe um modelo de resumo primeiro (aba Modelos)"); switchView("models"); return; }
+  $("genSummaryBtn").disabled=true; $("dlSummaryBtn").classList.add("hidden");
+  $("summaryStage").textContent="Iniciando…";
+  $("summaryBody").innerHTML='<p class="muted placeholder">Gerando o resumo… isso usa a GPU e pode levar alguns segundos.</p>';
+  activateTab("summary");
+  fetch(`/api/summarize/${currentJob}?model=${encodeURIComponent(model)}`,{method:"POST"})
+    .then(async (r)=>{ if(!r.ok){ let d="Falha"; try{d=(await r.json()).detail||d;}catch(_){ } throw new Error(d);} return r.json(); })
+    .then(()=>connectSummaryStream(currentJob))
+    .catch((err)=>{ $("genSummaryBtn").disabled=false; $("summaryStage").textContent="";
+      $("summaryBody").innerHTML='<p class="muted placeholder">Não foi possível gerar o resumo.</p>';
+      toast("⚠ "+(err&&err.message?err.message:"falha")); });
+}
+function connectSummaryStream(jobId){
+  if(summaryES){ summaryES.close(); }
+  const es=new EventSource(`/api/summarize/${jobId}/stream`); summaryES=es;
+  es.addEventListener("log",(e)=>{ $("summaryStage").textContent=JSON.parse(e.data).message; });
+  es.addEventListener("done",(e)=>{ const d=JSON.parse(e.data); es.close(); summaryES=null;
+    $("genSummaryBtn").disabled=false; $("genSummaryBtn").textContent="✦ Gerar de novo";
+    $("summaryStage").textContent="Concluído ✓"; $("summaryBody").innerHTML=mdToHtml(d.md||"");
+    const a=$("dlSummaryBtn"); a.href=`/api/summary/${jobId}.md`; a.classList.remove("hidden");
+    loadHistory(); toast("Resumo pronto ✓"); });
+  es.addEventListener("error",(e)=>{ let msg="falha"; try{msg=JSON.parse(e.data).message;}catch(_){ }
+    es.close(); summaryES=null; $("genSummaryBtn").disabled=false;
+    $("summaryStage").textContent="Erro: "+msg; toast("⚠ "+msg); });
+}
+// Markdown mínimo (títulos, listas, negrito, código) para exibir o resumo.
+function mdToHtml(md){
+  const lines=String(md||"").replace(/\r/g,"").split("\n"); let html="", inList=false;
+  const inline=(s)=>esc(s).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/`([^`]+?)`/g,"<code>$1</code>");
+  const close=()=>{ if(inList){ html+="</ul>"; inList=false; } };
+  for(const raw of lines){ const line=raw.trim(); if(!line){ close(); continue; } let m;
+    if((m=line.match(/^(#{1,4})\s+(.*)$/))){ close(); const lv=Math.min(m[1].length+1,5); html+=`<h${lv} class="md-h">${inline(m[2])}</h${lv}>`; }
+    else if((m=line.match(/^[-*]\s+(.*)$/))){ if(!inList){ html+="<ul class='md-ul'>"; inList=true; } html+=`<li>${inline(m[1])}</li>`; }
+    else { close(); html+=`<p>${inline(line)}</p>`; } }
+  close(); return html||'<p class="muted">(resumo vazio)</p>';
+}
 
 // ---------- biblioteca / histórico ----------
 let HISTORY=[];
@@ -532,11 +646,14 @@ function renderHistory(items){
       </div><div class="hist-actions">
       <a class="m-btn" href="/api/result/${m.job_id}.txt" download>.txt</a>
       <a class="m-btn" href="/api/result/${m.job_id}.srt" download>.srt</a>
+      ${m.has_summary ? `<a class="m-btn m-md" href="/api/summary/${m.job_id}.md" download title="Resumo em Markdown">.md</a>`
+        : `<button class="m-btn hist-sum" type="button" title="Gerar resumo com IA">✦ resumo</button>`}
       <button class="m-btn hist-del" type="button" title="Apagar">✕</button></div></div>
       <div class="hist-body"></div>`;
-    row.querySelector(".hist-head").addEventListener("click",(e)=>{ if(e.target.closest("a")||e.target.closest(".hist-del")) return;
+    row.querySelector(".hist-head").addEventListener("click",(e)=>{ if(e.target.closest("a")||e.target.closest("button")) return;
       toggleHist(row,m.job_id); });
     row.querySelector(".hist-del").onclick=()=>delHist(m.job_id,m.orig_name);
+    const sb=row.querySelector(".hist-sum"); if(sb) sb.onclick=()=>genHistSummary(m.job_id,row);
     wrap.appendChild(row);
   });
 }
@@ -546,6 +663,19 @@ async function toggleHist(row,id){
   row.classList.add("open"); body.innerHTML='<p class="muted tiny">carregando…</p>';
   try { const d=await fetch(`/api/history/${id}`).then((r)=>r.json()); body.textContent=d.text||"(vazio)"; }
   catch(_){ body.innerHTML='<p class="muted tiny">erro ao carregar</p>'; }
+}
+function genHistSummary(id,row){
+  const model=summaryModelToUse();
+  if(!model){ toast("Baixe um modelo de resumo primeiro (aba Modelos)"); switchView("models"); return; }
+  const btn=row.querySelector(".hist-sum"); if(btn){ btn.disabled=true; btn.textContent="gerando…"; }
+  fetch(`/api/summarize/${id}?model=${encodeURIComponent(model)}`,{method:"POST"})
+    .then(async (r)=>{ if(!r.ok){ let d="Falha"; try{d=(await r.json()).detail||d;}catch(_){ } throw new Error(d);} return r.json(); })
+    .then(()=>{ const es=new EventSource(`/api/summarize/${id}/stream`);
+      es.addEventListener("log",(e)=>{ if(btn) btn.textContent=JSON.parse(e.data).message.slice(0,14); });
+      es.addEventListener("done",()=>{ es.close(); toast("Resumo pronto ✓"); loadHistory(); });
+      es.addEventListener("error",(e)=>{ let m="falha"; try{m=JSON.parse(e.data).message;}catch(_){ }
+        es.close(); if(btn){ btn.disabled=false; btn.textContent="✦ resumo"; } toast("⚠ "+m); }); })
+    .catch((err)=>{ if(btn){ btn.disabled=false; btn.textContent="✦ resumo"; } toast("⚠ "+(err&&err.message?err.message:"falha")); });
 }
 function delHist(id,name){ if(!confirm(`Apagar a transcrição de "${name||"áudio"}"?`)) return;
   fetch(`/api/history/${id}`,{method:"DELETE"}).finally(()=>{ loadHistory(); toast("Transcrição apagada"); }); }

@@ -14,19 +14,21 @@ import shutil
 import threading
 import time
 import uuid
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    PlainTextResponse,
     RedirectResponse,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-from . import metrics, transcriber
+from . import metrics, summarizer, transcriber
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(BASE_DIR, "web")
@@ -59,6 +61,7 @@ async def no_cache_static(request: Request, call_next):
 
 # metadados de transcrições em memória (job_id -> info)
 JOBS: dict[str, dict] = {}
+SUMMARY_JOBS: dict[str, dict] = {}
 
 
 # --------------------------------------------------------------------------
@@ -207,6 +210,79 @@ def delete_model_route(model_id: str, _: bool = Depends(require_auth)):
         job.cancel()
         _downloads.pop(model_id, None)
     removed = transcriber.delete_model(model_id)
+    return {"ok": True, "removed": removed}
+
+
+# --------------------------------------------------------------------------
+# Modelos de resumo (LLM) — baixar/cancelar/apagar, no mesmo padrão do Whisper
+# --------------------------------------------------------------------------
+_summary_downloads: dict[str, summarizer.SummaryDownloadJob] = {}
+
+
+@app.get("/api/summary/models")
+def list_summary_models(_: bool = Depends(require_auth)):
+    return {"models": summarizer.catalog(), "default": summarizer.DEFAULT_MODEL}
+
+
+@app.get("/api/summary/models/{model_id}/download")
+def download_summary_model(model_id: str, _: bool = Depends(require_auth)):
+    if model_id not in summarizer.SUMMARY_BY_ID:
+        raise HTTPException(404, "Modelo desconhecido")
+
+    def stream():
+        job = summarizer.SummaryDownloadJob(model_id)
+        _summary_downloads[model_id] = job
+        total = summarizer.SUMMARY_BY_ID[model_id]["size_mb"]
+        if summarizer.is_downloaded(model_id):
+            yield sse("done", {"model": model_id, "already": True})
+            return
+        job.start()
+        yield sse("start", {"model": model_id, "total_mb": total})
+        while True:
+            job.poll()
+            if job.done:
+                break
+            mb = job.progress_mb()
+            yield sse("progress", {
+                "mb": mb, "total_mb": total,
+                "percent": round(min(mb / total * 100, 99.5), 1) if total else 0,
+            })
+            time.sleep(0.8)
+        _summary_downloads.pop(model_id, None)
+        if job.cancelled:
+            yield sse("cancelled", {"model": model_id})
+        elif job.error:
+            yield sse("error", {"message": job.error})
+        else:
+            yield sse("done", {"model": model_id,
+                               "mb": job.progress_mb(), "total_mb": total})
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers=_sse_headers())
+
+
+@app.post("/api/summary/models/{model_id}/cancel")
+def cancel_summary_download(model_id: str, _: bool = Depends(require_auth)):
+    if model_id not in summarizer.SUMMARY_BY_ID:
+        raise HTTPException(404, "Modelo desconhecido")
+    job = _summary_downloads.get(model_id)
+    if job:
+        job.cancel()
+        _summary_downloads.pop(model_id, None)
+        return {"ok": True, "cancelled": True}
+    summarizer.delete_model(model_id)
+    return {"ok": True, "cancelled": False}
+
+
+@app.delete("/api/summary/models/{model_id}")
+def delete_summary_model(model_id: str, _: bool = Depends(require_auth)):
+    if model_id not in summarizer.SUMMARY_BY_ID:
+        raise HTTPException(404, "Modelo desconhecido")
+    job = _summary_downloads.get(model_id)
+    if job:
+        job.cancel()
+        _summary_downloads.pop(model_id, None)
+    removed = summarizer.delete_model(model_id)
     return {"ok": True, "removed": removed}
 
 
@@ -485,7 +561,7 @@ def _save_results(job_id: str, job: dict, done: dict):
     base = os.path.splitext(job["name"])[0] or "transcricao"
     with open(os.path.join(RESULT_DIR, f"{job_id}.txt"), "w",
               encoding="utf-8") as fh:
-        fh.write(done["text"])
+        fh.write(transcriber.to_lines(done["text"]))
     with open(os.path.join(RESULT_DIR, f"{job_id}.srt"), "w",
               encoding="utf-8") as fh:
         fh.write(done["srt"])
@@ -514,8 +590,130 @@ def download_result(job_id: str, ext: str, _: bool = Depends(require_auth)):
     if not os.path.isfile(path):
         raise HTTPException(404, "Resultado não encontrado")
     base = (_load_meta(job_id) or {}).get("base", "transcricao")
+    if ext == "txt":
+        # Reformata na hora (uma frase por linha), cobrindo também os .txt antigos.
+        with open(path, encoding="utf-8") as fh:
+            body = transcriber.to_lines(fh.read())
+        ascii_base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("_") or "transcricao"
+        disp = (f"attachment; filename=\"{ascii_base}.txt\"; "
+                f"filename*=UTF-8''{quote(base + '.txt')}")
+        return PlainTextResponse(body, headers={"Content-Disposition": disp})
     return FileResponse(path, media_type="text/plain; charset=utf-8",
                         filename=f"{base}.{ext}")
+
+
+# --------------------------------------------------------------------------
+# Resumo (LLM) de uma transcrição — sob demanda, salvo como .summary.md
+# --------------------------------------------------------------------------
+def _summary_md_path(job_id: str) -> str:
+    return os.path.join(RESULT_DIR, f"{job_id}.summary.md")
+
+
+def _transcript_for(job_id: str) -> str | None:
+    job = JOBS.get(job_id)
+    if job and job.get("text"):
+        return job["text"]
+    txt_path = os.path.join(RESULT_DIR, f"{job_id}.txt")
+    if os.path.isfile(txt_path):
+        with open(txt_path, encoding="utf-8") as fh:
+            return fh.read()
+    return None
+
+
+def _summary_markdown(name: str, meta: dict, body: str) -> str:
+    when = time.strftime("%d/%m/%Y %H:%M", time.localtime(meta.get("date") or time.time()))
+    model = meta.get("summary_model") or ""
+    head = f"# Resumo — {name}\n\n> Gerado por audioTXT · {when}"
+    if model:
+        head += f" · modelo {model}"
+    return f"{head}\n\n{body.strip()}\n"
+
+
+def _run_summary(job_id: str, text: str, model_id: str):
+    sj = SUMMARY_JOBS[job_id]
+    try:
+        body = summarizer.summarize(text, model_id,
+                                    log=lambda m: sj["logs"].append(m))
+        meta = _load_meta(job_id) or {}
+        name = meta.get("base") or (JOBS.get(job_id, {}) or {}).get("name") or "transcrição"
+        name = os.path.splitext(name)[0]
+        meta_for_head = dict(meta)
+        meta_for_head["summary_model"] = summarizer.SUMMARY_BY_ID[model_id]["label"]
+        full = _summary_markdown(name, meta_for_head, body)
+        with open(_summary_md_path(job_id), "w", encoding="utf-8") as fh:
+            fh.write(full)
+        if meta:
+            meta["has_summary"] = True
+            meta["summary_model"] = model_id
+            with open(_meta_path(job_id), "w", encoding="utf-8") as fh:
+                json.dump(meta, fh, ensure_ascii=False)
+        sj["md"] = full
+        sj["status"] = "done"
+    except Exception as exc:
+        sj["status"] = "error"
+        sj["error"] = str(exc)
+    finally:
+        summarizer.touch()
+
+
+@app.post("/api/summarize/{job_id}")
+def summarize_start(job_id: str, model: str = "", _: bool = Depends(require_auth)):
+    _check_id(job_id)
+    text = _transcript_for(job_id)
+    if not text or not text.strip():
+        raise HTTPException(404, "Transcrição não encontrada para resumir.")
+    model_id = model if model in summarizer.SUMMARY_BY_ID else summarizer.DEFAULT_MODEL
+    if not summarizer.is_downloaded(model_id):
+        raise HTTPException(400, "Baixe o modelo de resumo primeiro (aba Modelos).")
+    sj = SUMMARY_JOBS.get(job_id)
+    if sj and sj["status"] == "running":
+        return {"ok": True, "status": "running"}
+    SUMMARY_JOBS[job_id] = {"status": "running", "logs": [], "md": None,
+                            "error": None, "model": model_id}
+    threading.Thread(target=_run_summary, args=(job_id, text, model_id),
+                     daemon=True).start()
+    return {"ok": True, "status": "running", "model": model_id}
+
+
+@app.get("/api/summarize/{job_id}/stream")
+def summarize_stream(job_id: str, _: bool = Depends(require_auth)):
+    if job_id not in SUMMARY_JOBS:
+        raise HTTPException(404, "Resumo não encontrado")
+
+    def stream():
+        last_log = 0
+        while True:
+            sj = SUMMARY_JOBS.get(job_id)
+            if not sj:
+                yield sse("error", {"message": "Resumo removido"})
+                return
+            while last_log < len(sj["logs"]):
+                yield sse("log", {"message": sj["logs"][last_log]})
+                last_log += 1
+            if sj["status"] == "done":
+                yield sse("done", {"md": sj["md"], "job_id": job_id})
+                return
+            if sj["status"] == "error":
+                yield sse("error", {"message": sj["error"] or "falha"})
+                return
+            time.sleep(0.4)
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers=_sse_headers())
+
+
+@app.get("/api/summary/{job_id}.md")
+def download_summary(job_id: str, _: bool = Depends(require_auth)):
+    _check_id(job_id)
+    path = _summary_md_path(job_id)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Resumo não encontrado")
+    base = (_load_meta(job_id) or {}).get("base", "resumo")
+    ascii_base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("_") or "resumo"
+    disp = (f"attachment; filename=\"{ascii_base}-resumo.md\"; "
+            f"filename*=UTF-8''{quote(base + '-resumo.md')}")
+    return FileResponse(path, media_type="text/markdown; charset=utf-8",
+                        headers={"Content-Disposition": disp})
 
 
 # --------------------------------------------------------------------------
@@ -545,7 +743,7 @@ def history_item(job_id: str, _: bool = Depends(require_auth)):
         with open(txt_path, encoding="utf-8") as fh:
             text = fh.read()
     out = dict(meta)
-    out["text"] = text
+    out["text"] = transcriber.to_lines(text)
     return out
 
 
@@ -558,7 +756,11 @@ def history_delete(job_id: str, _: bool = Depends(require_auth)):
         if os.path.isfile(p):
             os.remove(p)
             removed = True
+    sm = _summary_md_path(job_id)
+    if os.path.isfile(sm):
+        os.remove(sm)
     JOBS.pop(job_id, None)
+    SUMMARY_JOBS.pop(job_id, None)
     return {"ok": True, "removed": removed}
 
 

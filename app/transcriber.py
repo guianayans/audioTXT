@@ -398,6 +398,21 @@ def _fmt_ts(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+
+
+def to_lines(text: str) -> str:
+    """Reescreve o texto com uma frase por linha, em vez de texto corrido.
+
+    Idempotente: reaplicar sobre um texto já quebrado devolve as mesmas linhas.
+    """
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return ""
+    parts = _SENTENCE_SPLIT.split(text)
+    return "\n".join(p.strip() for p in parts if p.strip())
+
+
 def build_srt(segments: list[dict]) -> str:
     out = []
     for i, seg in enumerate(segments, 1):

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/static/app.css?v=12" />
+<link rel="stylesheet" href="/static/app.css?v=14" />
 </head>
 <body>
 <div class="app">
@@ -160,6 +160,7 @@
               <div class="tabs" id="tabs">
                 <button class="tab active" data-tab="transcript">📝 Transcrição</button>
                 <button class="tab" data-tab="segments">⏱ Segmentos</button>
+                <button class="tab" data-tab="summary" id="tabSummary">✦ Resumo</button>
                 <div class="tab-spacer"></div>
                 <div class="search-box editor-tool hidden"><input id="searchInput" placeholder="Buscar no texto…" /></div>
                 <button class="icon-btn editor-tool hidden" id="copyBtn" title="Copiar">⧉</button>
@@ -187,6 +188,16 @@
               </div>
               <div class="tab-panel hidden" id="panel-segments">
                 <div class="segments-plain" id="segmentsPlain"></div>
+              </div>
+              <div class="tab-panel hidden" id="panel-summary">
+                <div class="summary-head">
+                  <button class="btn-primary" id="genSummaryBtn">✦ Gerar resumo</button>
+                  <a class="btn-soft hidden" id="dlSummaryBtn" download>⬇ Baixar .md</a>
+                  <span class="muted tiny" id="summaryStage"></span>
+                </div>
+                <div class="summary-body" id="summaryBody">
+                  <p class="muted placeholder">Gere um resumo dos pontos principais desta transcrição, com IA rodando na sua GPU. O resultado pode ser baixado em Markdown (.md).</p>
+                </div>
               </div>
             </div>
           </div>
@@ -253,6 +264,10 @@
         <div class="view-head"><h2>Modelos Whisper</h2>
           <span class="muted tiny">Baixe uma vez; fica salvo no servidor. Recomendado p/ 16 GB: Large v3 Turbo.</span></div>
         <div class="card"><div class="model-grid" id="modelGrid"></div></div>
+
+        <div class="view-head" style="margin-top:22px"><h2>Modelo de resumo (IA)</h2>
+          <span class="muted tiny">LLM local p/ gerar o resumo das transcrições. Baixe um para habilitar o botão “Gerar resumo”.</span></div>
+        <div class="card"><div class="model-grid" id="summaryModelGrid"></div></div>
       </section>
 
       <!-- ====== VIEW: CONFIGURAÇÕES ====== -->
@@ -277,6 +292,6 @@
 <div class="toast" id="toast"></div>
 
 <script src="/static/vendor/chart.min.js"></script>
-<script src="/static/app.js?v=12"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>

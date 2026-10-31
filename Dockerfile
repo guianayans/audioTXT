@@ -1,3 +1,13 @@
+# Estágio de build: compila o llama-cpp-python com CUDA para a RTX 5070 Ti
+# (Blackwell/sm_120). Fica só neste estágio; o final recebe apenas o wheel.
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS llamabuild
+ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip git build-essential cmake ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=120" FORCE_CMAKE=1
+RUN pip3 wheel --no-deps -w /wheels "llama-cpp-python>=0.3.2"
+
 # Base CUDA 12.8 + cuDNN 9 (runtime) — compatível com a RTX 5070 Ti (Blackwell/sm_120)
 # e com o CTranslate2/faster-whisper, que exigem CUDA 12 + cuDNN 9.
 FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
@@ -15,12 +25,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     ca-certificates \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Instala o llama-cpp-python (CUDA) compilado no estágio de build, sem mexer nas
+# dependências já instaladas (numpy etc. do faster-whisper).
+COPY --from=llamabuild /wheels /wheels
+RUN pip3 install --no-cache-dir --no-deps /wheels/*.whl && rm -rf /wheels
 
 COPY . .
 
