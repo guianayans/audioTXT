@@ -389,7 +389,7 @@ canvas { display: block; width: 100%; }
   opacity: 0; max-width: 0; padding: 5px 0; border-width: 0; margin-left: 0;
   overflow: hidden; pointer-events: none;
   transition: opacity .18s ease, max-width .2s ease, padding .2s ease, margin .2s ease; }
-.hist-item:hover .sum-group .m-sumdel {
+.sum-group:hover .m-sumdel {
   opacity: 1; max-width: 40px; padding: 5px 8px; margin-left: 5px; border-width: 1px; pointer-events: auto; }
 .sum-group .m-sumdel:hover { background: rgba(248,113,113,.12); border-color: var(--bad); }
 /* em telas de toque (sem hover) o ✕ fica sempre visível */
